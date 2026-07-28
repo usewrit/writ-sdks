@@ -75,7 +75,7 @@ jobs:
         go: ["1.23", "1.24"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           # The SDK has zero dependencies and no go.sum, so there is nothing to
