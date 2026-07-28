@@ -425,8 +425,7 @@ fn api_key_required(message: &str) -> WritError {
 /// reset_at, requests_remaining, pages_remaining}}` (some errors are flat
 /// `{"code", "message"}`) — to a typed [`WritError`].
 fn cloud_error_from(status: u16, raw: &str) -> WritError {
-    let body: Value =
-        serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+    let body: Value = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
     // `detail` may be a nested object, a bare string, or absent (flat body).
     let detail = body.get("detail").cloned().unwrap_or_else(|| body.clone());
     let d = detail.as_object();
@@ -626,8 +625,7 @@ fn random_bytes_16() -> [u8; 16] {
 
 /// URL-safe base64, no padding (matches every other Writ SDK's client id).
 fn base64_url_nopad(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -725,12 +723,24 @@ mod tests {
         }
 
         // 402 api_key_required → ApiKeyRequired.
-        let err = cloud_error_from(402, r#"{"detail":{"code":"api_key_required","message":"key please"}}"#);
-        assert!(matches!(err, WritError::ApiKeyRequired { .. }), "got {err:?}");
+        let err = cloud_error_from(
+            402,
+            r#"{"detail":{"code":"api_key_required","message":"key please"}}"#,
+        );
+        assert!(
+            matches!(err, WritError::ApiKeyRequired { .. }),
+            "got {err:?}"
+        );
 
         // 402 otherwise → InsufficientCredits.
-        let err = cloud_error_from(402, r#"{"detail":{"code":"insufficient_credits","message":"broke"}}"#);
-        assert!(matches!(err, WritError::InsufficientCredits { .. }), "got {err:?}");
+        let err = cloud_error_from(
+            402,
+            r#"{"detail":{"code":"insufficient_credits","message":"broke"}}"#,
+        );
+        assert!(
+            matches!(err, WritError::InsufficientCredits { .. }),
+            "got {err:?}"
+        );
 
         // Flat body + non-tier status → generic Api.
         let err = cloud_error_from(400, r#"{"code":"bad_request","message":"nope"}"#);

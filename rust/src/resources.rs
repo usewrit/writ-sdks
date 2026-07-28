@@ -17,12 +17,10 @@ use serde_json::{json, Value};
 use crate::client::{Inner, SSE_TIMEOUT};
 use crate::error::{Result, WritError};
 use crate::models::{
-    RunCompleted,
     AgentStatus, ApiKey, Automation, CancelOutcome, CrawlCancel, CrawlJob, CrawlList,
-    CrawlStartParams, DatasetFormat, DatasetList, DatasetMeta, DatasetSearchResult, Extractor, Health, Monitor,
-    MonitorHistory, Persona,
-    RunData, RunEvent, RunFeedItem, RunOutcome, RunResults, RunStarted, SecretMeta, Selector,
-    StoredFile, VaultStatus, Workflow,
+    CrawlStartParams, DatasetFormat, DatasetList, DatasetMeta, DatasetSearchResult, Extractor,
+    Health, Monitor, MonitorHistory, Persona, RunCompleted, RunData, RunEvent, RunFeedItem,
+    RunOutcome, RunResults, RunStarted, SecretMeta, Selector, StoredFile, VaultStatus, Workflow,
 };
 use crate::page::Page;
 use crate::sse::SseParser;
