@@ -78,6 +78,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
+          # The SDK has zero dependencies and no go.sum, so there is nothing to
+          # cache — and setup-go looks for go.mod at the REPO root, which in a
+          # multi-language repo does not exist. Left on, it warns every run.
+          cache: false
       - run: go build ./...
       - run: go vet ./...
       # -race matters here: the SSE reader hands events to the caller from a
