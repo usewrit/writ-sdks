@@ -1,0 +1,59 @@
+{
+  "name": "@usewrit/agent-sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for Writ — drive the local writ-agentd daemon (workflows, runs, monitors, recording) and Writ Cloud (scrape, map, crawl) from one client.",
+  "license": "MIT",
+  "author": "The Writ Project Authors",
+  "homepage": "https://github.com/usewrit/writ-sdks/tree/main/typescript#readme",
+  "bugs": {
+    "url": "https://github.com/usewrit/writ-sdks/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usewrit/writ-sdks.git",
+    "directory": "typescript"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "writ",
+    "automation",
+    "browser-automation",
+    "workflows",
+    "local-agent",
+    "sdk",
+    "scraping",
+    "crawler",
+    "cloud"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.7"
+  }
+}

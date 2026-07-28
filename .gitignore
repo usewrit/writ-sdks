@@ -1,0 +1,42 @@
+# Build output and dependency trees. These are large enough to matter: rust/target
+# is over a gigabyte and typescript/node_modules is ~50 MB, and a blob committed
+# to public git history cannot be removed afterwards.
+node_modules/
+dist/
+target/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging output
+*.tgz
+*.whl
+*.tar.gz
+*.crate
+
+# Coverage
+coverage/
+.coverage
+htmlcov/
+*.lcov
+
+# Local state a contributor might create while smoke-testing against a daemon.
+# `runtime.json` carries a live agent TOKEN — it must never be committed.
+runtime.json
+local_token
+client_id
+.writ/
+.env
+
+# OS / editor
+.DS_Store
+*.log

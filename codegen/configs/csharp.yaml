@@ -1,0 +1,7 @@
+# openapi-generator config — C# client for the Writ agent API
+packageName: Writ.Agent
+packageVersion: 0.1.0
+targetFramework: net8.0
+library: httpclient
+nullableReferenceTypes: true
+hideGenerationTimestamp: true

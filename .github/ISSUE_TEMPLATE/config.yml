@@ -1,0 +1,17 @@
+blank_issues_enabled: true
+contact_links:
+  - name: The agent daemon itself (recording, replay, browsing)
+    url: https://github.com/usewrit/writ-agent/issues
+    about: These SDKs are clients. Daemon behaviour, endpoints and browser automation live in writ-agent.
+
+  - name: The self-host coordinator
+    url: https://github.com/usewrit/writ/issues
+    about: Web UI, API and your data.
+
+  - name: The MCP connector
+    url: https://github.com/usewrit/writ-mcp/issues
+    about: Connecting Claude Code / Cursor to Writ.
+
+  - name: Report a security vulnerability
+    url: https://github.com/usewrit/writ-sdks/security/advisories/new
+    about: Please report privately — never as a public issue.

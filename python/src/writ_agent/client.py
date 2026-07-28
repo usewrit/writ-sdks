@@ -1,0 +1,198 @@
+"""``WritAgent`` — the synchronous client."""
+
+from __future__ import annotations
+
+import time
+from typing import Any, Iterator
+
+import httpx
+
+from . import _ops as ops
+from . import discovery
+from .cloud import Cloud
+from ._base import (
+    SSE_READ_TIMEOUT,
+    USER_AGENT,
+    BaseClient,
+    check_response,
+    connection_error,
+    decode_response,
+    request_kwargs,
+)
+from ._sse import SSEDecoder
+from .errors import (
+    WritApiError,
+    WritConnectionError,
+    WritError,
+    WritTimeoutError,
+    api_error_from_response,
+)
+from .types import TERMINAL_EVENTS, RunEvent, RunFeedItem
+
+__all__ = ["WritAgent"]
+
+
+def _timeout_message(run_id: int, wait_timeout: float) -> str:
+    return (
+        f"run {run_id} did not finish within {wait_timeout:g}s — the run was NOT "
+        "cancelled and may still be executing (call runs.cancel to stop it)"
+    )
+
+
+class WritAgent(BaseClient):
+    """Synchronous client for the Writ local agent.
+
+    With no ``base_url``/``token``, the constructor performs daemon discovery
+    (env → ``runtime.json`` candidates → 2 s liveness probe; DESIGN §4) and
+    raises :class:`WritDiscoveryError` when no live daemon is found. Explicit
+    options always win over discovery.
+
+    Usable as a context manager::
+
+        with WritAgent() as client:
+            print(client.agent.status())
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        *,
+        timeout: float = 30.0,
+        verify: Any = True,
+        ca_file: Any = None,
+        transport: Any = None,
+        api_key: str | None = None,
+        cloud_url: str | None = None,
+        client_id: str | None = None,
+    ) -> None:
+        super().__init__(
+            base_url,
+            token,
+            timeout=timeout,
+            verify=verify,
+            ca_file=ca_file,
+            transport=transport,
+        )
+        # Tiered Writ Cloud surface (scrape/map/crawl) — its own base URL + credential,
+        # independent of the local-daemon transport above.
+        self.cloud = Cloud(
+            api_key=api_key, cloud_url=cloud_url, client_id=client_id,
+            timeout=timeout, verify=self._verify,
+        )
+        resolved_base, resolved_token = discovery.discover_sync(
+            self._init_base,
+            self._init_token,
+            verify=self._verify,
+            user_agent=USER_AGENT,
+        )
+        self._base_url = resolved_base
+        self._token = resolved_token
+        client_kwargs: dict[str, Any] = {
+            "base_url": resolved_base,
+            "headers": self._headers(),
+            "timeout": self._timeout,
+            "verify": self._verify,
+        }
+        if transport is not None:
+            client_kwargs["transport"] = transport
+        self._http = httpx.Client(**client_kwargs)
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> "WritAgent":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    # -- transport -----------------------------------------------------------
+
+    def _call(self, op: ops.Op) -> Any:
+        try:
+            response = self._http.request(op.method, op.path, **request_kwargs(op))
+        except httpx.TransportError as exc:
+            raise connection_error(self._base_url, exc) from exc
+        return decode_response(op, check_response(op, response))
+
+    # -- SSE (DESIGN §8) -----------------------------------------------------
+
+    def _run_events(
+        self, run_id: int, _deadline: float | None = None
+    ) -> Iterator[RunEvent]:
+        path = ops.runs_events_path(run_id)
+        timeout = httpx.Timeout(
+            self._timeout, read=None if _deadline is None else SSE_READ_TIMEOUT
+        )
+        try:
+            with self._http.stream("GET", path, timeout=timeout) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise api_error_from_response(response)
+                decoder = SSEDecoder()
+                for line in response.iter_lines():
+                    if _deadline is not None and time.monotonic() > _deadline:
+                        raise WritTimeoutError(
+                            f"run {run_id} event stream exceeded the wait deadline"
+                        )
+                    event = decoder.feed(line)
+                    if event is None:
+                        continue
+                    yield event  # type: ignore[misc]
+                    if event.get("event") in TERMINAL_EVENTS:
+                        return
+        except httpx.TransportError as exc:
+            raise connection_error(self._base_url, exc) from exc
+
+    # -- run_and_wait (DESIGN §8) ---------------------------------------------
+
+    def _run_and_wait(
+        self,
+        workflow_id: int,
+        *,
+        inputs: dict[str, Any] | None,
+        persona_id: int | None,
+        files: dict[str, str] | None,
+        wait_timeout: float,
+        poll_interval: float,
+        include_results: bool,
+    ) -> RunFeedItem:
+        started = self._call(
+            ops.workflows_run(workflow_id, inputs, persona_id, False, files)
+        )
+        run_id = started.get("run_id") if isinstance(started, dict) else None
+        if not isinstance(run_id, int):
+            raise WritError(f"run did not return a run_id: {started!r}")
+        deadline = time.monotonic() + wait_timeout
+
+        terminal_seen = False
+        try:
+            for event in self._run_events(run_id, _deadline=deadline):
+                if event.get("event") in TERMINAL_EVENTS:
+                    terminal_seen = True
+                    break
+        except WritTimeoutError:
+            raise WritTimeoutError(_timeout_message(run_id, wait_timeout)) from None
+        except (WritConnectionError, WritApiError):
+            # SSE failed or dropped pre-terminal → poll (DESIGN §8 step 3).
+            terminal_seen = False
+
+        if terminal_seen:
+            final: RunFeedItem = self._call(ops.runs_get(run_id))
+        else:
+            while True:
+                final = self._call(ops.runs_get(run_id))
+                if final.get("status") != "running":
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise WritTimeoutError(_timeout_message(run_id, wait_timeout))
+                time.sleep(min(poll_interval, remaining))
+
+        if include_results:
+            final = dict(final)  # type: ignore[assignment]
+            final["results"] = self._call(ops.runs_results(run_id))
+        return final

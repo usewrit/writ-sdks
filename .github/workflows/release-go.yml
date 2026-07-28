@@ -1,0 +1,66 @@
+name: Release — Go module
+
+# Go has no registry: the tag IS the release. But the tag must be spelled
+# exactly `go/vX.Y.Z` — for a module in a subdirectory, the directory prefix is
+# mandatory, and a plain `vX.Y.Z` tag publishes NOTHING for `.../writ-sdks/go`
+# while looking like it worked. This job exists to catch that, and to warm the
+# module proxy so the first `go get` is not the thing that discovers a problem.
+#
+#   git tag go/v0.1.0 && git push origin go/v0.1.0
+#
+# Note: once the proxy has served a version it is immutable — deleting the tag
+# does not unpublish it.
+on:
+  push:
+    tags:
+      - "go/v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify and publish the module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+
+      - name: Build, vet and test
+        working-directory: go
+        run: |
+          go build ./...
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: The module path must match this repository
+        working-directory: go
+        run: |
+          want="github.com/${GITHUB_REPOSITORY}/go"
+          got="$(go list -m)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::go.mod says '$got' but this repo implies '$want' — go get would fail"
+            exit 1
+          fi
+          echo "module path ok: $got"
+
+      - name: Ask the module proxy to fetch this version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="${GITHUB_REF#refs/tags/go/}"
+          module="github.com/${GITHUB_REPOSITORY}/go"
+          echo "requesting ${module}@${version}"
+          # Retry: the proxy needs a moment to see a just-pushed tag.
+          for i in 1 2 3 4 5; do
+            if GOPROXY=https://proxy.golang.org GOFLAGS=-mod=mod \
+               go list -m "${module}@${version}"; then
+              echo "proxy has ${module}@${version}"
+              exit 0
+            fi
+            echo "not yet — retrying in 20s"; sleep 20
+          done
+          echo "::error::proxy did not serve ${module}@${version}; check the tag spelling (it must be go/vX.Y.Z)"
+          exit 1

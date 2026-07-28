@@ -1,0 +1,41 @@
+# One repo, four ecosystems. Each is registered separately so a bump lands as a
+# reviewable PR scoped to the language it affects.
+#
+# The GitHub Actions entry is the one that matters most: the release workflows
+# run with `id-token: write` and publish to three public registries.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /typescript
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      dev-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, typescript]
+
+  - package-ecosystem: pip
+    directory: /python
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    labels: [dependencies, python]
+
+  - package-ecosystem: gomod
+    directory: /go
+    schedule: { interval: weekly }
+    labels: [dependencies, go]
+
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, rust]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    labels: [dependencies, ci]

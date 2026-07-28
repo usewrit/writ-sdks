@@ -1,0 +1,76 @@
+name: Release — crates.io
+
+#   git tag rust-v0.1.0 && git push origin rust-v0.1.0
+#
+# AUTH: crates.io Trusted Publishing (OIDC) is preferred — configure it at
+#   crates.io → writ-client → Settings → Trusted Publishing
+#     owner: usewrit  repo: writ-sdks  workflow: release-crates.yml
+# It cannot be configured before the crate exists, so the FIRST release uses
+# CARGO_REGISTRY_TOKEN from the `crates-io` environment; delete it afterwards.
+on:
+  push:
+    tags:
+      - "rust-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package and verify, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish writ-client
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/rust-v}"
+          pkg="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys;print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag rust-v$tag does not match Cargo.toml version $pkg"
+            exit 1
+          fi
+          echo "publishing writ-client $pkg"
+
+      - run: cargo test
+
+      # `cargo package` also compiles the packaged sources, so this proves the
+      # crate builds from exactly the bytes that would be uploaded — not from
+      # whatever else happens to be in the working directory.
+      - name: Package
+        run: cargo package
+
+      - name: Verify the crate carries LICENSE and no build output
+        run: |
+          cargo package --list > /tmp/crate.txt
+          grep -qx "LICENSE" /tmp/crate.txt || { echo "crate has no LICENSE"; exit 1; }
+          if grep -q "^target/" /tmp/crate.txt; then echo "target/ leaked into the crate"; exit 1; fi
+          echo "crate ok: $(wc -l < /tmp/crate.txt) files"
+
+      - name: Publish
+        if: github.event_name == 'push' || inputs.dry_run == false
+        run: cargo publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Dry run only
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: echo "dry_run=true — crate verified, nothing published."

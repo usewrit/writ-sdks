@@ -1,0 +1,7 @@
+# openapi-generator config — Ruby gem for the Writ agent API
+gemName: writ-agent
+moduleName: WritAgent
+gemVersion: 0.1.0
+gemLicense: MIT
+library: faraday
+hideGenerationTimestamp: true

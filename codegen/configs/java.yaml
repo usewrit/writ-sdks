@@ -1,0 +1,11 @@
+# openapi-generator config — Java client for the Writ agent API
+groupId: dev.writ
+artifactId: writ-agent-client
+artifactVersion: 0.1.0
+apiPackage: dev.writ.agent.api
+modelPackage: dev.writ.agent.model
+invokerPackage: dev.writ.agent
+library: native            # java.net.http — no runtime deps beyond Jackson
+dateLibrary: java8
+useJakartaEe: true
+hideGenerationTimestamp: true

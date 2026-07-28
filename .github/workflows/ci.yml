@@ -1,0 +1,159 @@
+name: CI
+
+# Four SDKs implementing ONE contract (DESIGN.md). Each language is its own job
+# so a failure names the language immediately, and every job runs on every push:
+# the whole point of keeping them in one repo is that a wire change breaks all
+# four in the same PR rather than three of them silently, months apart.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript:
+    name: TypeScript (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: npm ci
+      - name: Type-check and build
+        run: npm run build
+      - run: npm test
+      # The package ships `dist/`, so a build that silently produces nothing
+      # would publish an empty module. Assert the entrypoint exists.
+      - name: The built entrypoint must exist
+        run: test -s dist/index.js && test -s dist/index.d.ts
+
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  go:
+    name: Go ${{ matrix.go }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.23", "1.24"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go build ./...
+      - run: go vet ./...
+      # -race matters here: the SSE reader hands events to the caller from a
+      # separate goroutine, which is exactly where a data race would hide.
+      - run: go test -race -count=1 ./...
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  # The published artifacts are the real deliverable, so build each one and prove
+  # it carries its licence. A package that claims MIT without shipping the text
+  # is an unbacked claim, and `files`/`include` lists are easy to get wrong.
+  packaging:
+    name: Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: "22" }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: npm tarball carries LICENSE
+        working-directory: typescript
+        run: |
+          npm ci && npm run build
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const raw = require("/tmp/pack.json");
+            // npm <=11 emits an array; npm >=12 an object keyed by package name.
+            const p = Array.isArray(raw) ? raw[0] : Object.values(raw)[0];
+            const files = p.files.map(f => f.path);
+            for (const want of ["LICENSE", "README.md", "package.json"]) {
+              if (!files.includes(want)) { console.error("missing from tarball: " + want); process.exit(1); }
+            }
+            if (!files.some(f => f.startsWith("dist/"))) { console.error("tarball has no dist/"); process.exit(1); }
+            console.log("npm tarball ok: " + files.length + " files");
+          '
+
+      - name: Python sdist and wheel carry LICENSE
+        working-directory: python
+        run: |
+          pip install build
+          python -m build --outdir /tmp/pydist
+          python - <<'PY'
+          import glob, tarfile, zipfile, sys
+          sd = glob.glob("/tmp/pydist/*.tar.gz")[0]
+          names = tarfile.open(sd).getnames()
+          assert any(n.endswith("/LICENSE") for n in names), "sdist has no LICENSE"
+          assert any("/tests/" in n for n in names), "sdist has no tests"
+          wh = glob.glob("/tmp/pydist/*.whl")[0]
+          wnames = zipfile.ZipFile(wh).namelist()
+          assert any("LICENSE" in n for n in wnames), "wheel has no LICENSE"
+          print("python sdist+wheel ok")
+          PY
+
+      - name: crates.io package carries LICENSE and excludes target/
+        working-directory: rust
+        run: |
+          cargo package --list --allow-dirty > /tmp/crate.txt
+          grep -qx "LICENSE" /tmp/crate.txt || { echo "crate has no LICENSE"; exit 1; }
+          if grep -q "^target/" /tmp/crate.txt; then echo "target/ leaked into the crate"; exit 1; fi
+          echo "crate ok: $(wc -l < /tmp/crate.txt) files"

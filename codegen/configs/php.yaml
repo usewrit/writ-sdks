@@ -1,0 +1,5 @@
+# openapi-generator config — PHP (composer) client for the Writ agent API
+invokerPackage: Writ\Agent
+packageName: usewrit/agent-sdk
+artifactVersion: 0.1.0
+hideGenerationTimestamp: true

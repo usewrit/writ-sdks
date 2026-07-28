@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "writ-agent"
+version = "0.1.0"
+description = "Official Python SDK for Writ — drive the local writ-agentd daemon and Writ Cloud (scrape, map, crawl) from one client"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Writ" }]
+keywords = ["writ", "automation", "workflows", "local-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=1.0"]
+
+[project.urls]
+# NOTE: this used to point at https://usewrit.com, which does not resolve — the
+# project's domain is usewrit.app, and even that is not serving the product yet.
+# Point at the repository, which is real, until there is a site to link.
+Homepage = "https://github.com/usewrit/writ-sdks"
+Repository = "https://github.com/usewrit/writ-sdks"
+Documentation = "https://github.com/usewrit/writ-sdks/tree/main/python#readme"
+Issues = "https://github.com/usewrit/writ-sdks/issues"
+Changelog = "https://github.com/usewrit/writ-sdks/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/writ_agent"]
+
+# The sdist is what a distro or an auditor rebuilds from, so it has to carry the
+# tests and the licence — not just the importable package.
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
