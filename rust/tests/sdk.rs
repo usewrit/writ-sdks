@@ -667,7 +667,11 @@ async fn crawl_list_unwraps_crawls_envelope() {
 #[tokio::test]
 async fn crawl_start_sends_body_and_parses_view() {
     let server = StubServer::start().await;
-    server.route("POST", "/v1/crawl", json_reply(200, crawl_view(5, "queued")));
+    server.route(
+        "POST",
+        "/v1/crawl",
+        json_reply(200, crawl_view(5, "queued")),
+    );
     let agent = client_for(&server);
     let job = agent
         .crawl()

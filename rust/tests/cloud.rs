@@ -77,7 +77,10 @@ async fn keyless_scrape_uses_keyless_path_and_client_id_header() {
 
     let req = &server.requests()[0];
     assert_eq!(req.path, "/v1/keyless/scrape");
-    assert_eq!(req.header("x-writ-client-id").as_deref(), Some("cid_test_123"));
+    assert_eq!(
+        req.header("x-writ-client-id").as_deref(),
+        Some("cid_test_123")
+    );
     assert!(
         req.header("authorization").is_none(),
         "keyless must NOT send a bearer token"
@@ -179,10 +182,7 @@ async fn keyless_crawl_refused_client_side_with_zero_requests() {
         .unwrap_err();
     match err {
         WritError::ApiKeyRequired {
-            status,
-            code,
-            body,
-            ..
+            status, code, body, ..
         } => {
             assert_eq!(status, 402);
             assert_eq!(code, "api_key_required");
@@ -309,7 +309,10 @@ async fn quota_keyless_fetches_metered_none() {
     let keyless = keyless_for(&server);
     let quota = keyless.quota().await.unwrap().expect("keyless has a quota");
     assert_eq!(quota.requests_remaining, 7);
-    assert_eq!(quota.upgrade_url.as_deref(), Some("https://usewrit.app/pricing"));
+    assert_eq!(
+        quota.upgrade_url.as_deref(),
+        Some("https://usewrit.app/pricing")
+    );
     assert_eq!(quota.tier, CloudTier::Keyless);
 
     // Metered never hits the network for quota.
