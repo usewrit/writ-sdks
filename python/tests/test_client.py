@@ -273,7 +273,7 @@ def test_json_error_message_resolution_order():
         ({"error": "boom", "detail": "d", "message": "m"}, "boom"),
         ({"detail": "d", "message": "m"}, "d"),
         ({"message": "m"}, "m"),
-        ({}, "Unprocessable Content"),
+        ({}, "Unprocessable Entity"),  # pinned: matches Go/Rust and every Python version
     ]
     for body, expected in cases:
         def handler(request: httpx.Request, body=body) -> httpx.Response:
@@ -524,3 +524,18 @@ def test_crawl_get_missing_raises_api_error():
             client.crawl.get(404)
     assert excinfo.value.status == 404
     assert excinfo.value.code == "not_found"
+
+
+def test_status_text_is_pinned_across_python_versions():
+    """CPython 3.13 renamed several reason phrases (422 'Unprocessable Entity' ->
+    'Unprocessable Content', 413, 414). The fallback message is part of the
+    cross-language contract (DESIGN.md §5) and must not vary by interpreter
+    version, nor drift from the Go and Rust SDKs."""
+    from writ_agent.errors import _status_text
+
+    assert _status_text(422) == "Unprocessable Entity"
+    assert _status_text(413) == "Request Entity Too Large"
+    assert _status_text(414) == "Request-URI Too Long"
+    # Unaffected codes still come from the stdlib.
+    assert _status_text(404) == "Not Found"
+    assert _status_text(599) == "HTTP 599"

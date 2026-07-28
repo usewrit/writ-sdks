@@ -142,7 +142,29 @@ def code_for_status(status: int) -> str:
     return f"http_{status}"
 
 
+# Statuses whose stdlib reason phrase is NOT stable across Python versions.
+#
+# CPython 3.13 renamed several phrases to follow RFC 9110: 422 "Unprocessable
+# Entity" → "Unprocessable Content", 413 "Request Entity Too Large" → "Content
+# Too Large", 414 "Request-URI Too Long" → "URI Too Long". Delegating to
+# HTTPStatus therefore made the fallback error message depend on the user's
+# interpreter minor version — and disagree with the Go and Rust SDKs, which
+# both produce the older spelling (Go via net/http.StatusText).
+#
+# DESIGN.md §5 is a cross-language contract: the same response must produce the
+# same message everywhere. Pin the affected phrases rather than inherit a table
+# that upstream is free to keep changing.
+_PINNED_STATUS_TEXT = {
+    413: "Request Entity Too Large",
+    414: "Request-URI Too Long",
+    422: "Unprocessable Entity",
+}
+
+
 def _status_text(status: int) -> str:
+    pinned = _PINNED_STATUS_TEXT.get(status)
+    if pinned is not None:
+        return pinned
     try:
         return HTTPStatus(status).phrase
     except ValueError:

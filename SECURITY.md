@@ -6,11 +6,18 @@ below:
 1. **`writ-agentd`, a daemon on your own machine**, over loopback — workflows,
    runs, monitors, recording, secrets. Authenticated with a local agent token
    read off disk.
-2. **Writ Cloud** (`https://api.usewrit.app` by default) — `scrape`, `map`,
-   `crawl`, `quota`, under the `.cloud` namespace. Authenticated with a Writ
-   Cloud API key, **or with no key at all** on the free keyless tier.
+2. **A crawl surface** — `scrape`, `map`, `crawl`, `quota`, under the `.cloud`
+   namespace. It points at whichever endpoint you configure:
+   - **your own self-hosted coordinator** (`WRIT_CLOUD_URL=https://writ.example.com`),
+     which serves the same `/api/crawl*` routes — the work and the data stay on
+     your infrastructure; or
+   - **Writ Cloud** (`https://api.usewrit.app`, the default).
 
-Everything that leaves your machine leaves through (2).
+   Authenticated with an API key from whichever instance you point at, **or with
+   no key at all** on Writ Cloud's free keyless tier.
+
+Everything that leaves your machine leaves through (2) — and where it goes is
+entirely determined by `WRIT_CLOUD_URL`.
 
 ## Reporting a vulnerability
 
