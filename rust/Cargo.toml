@@ -1,6 +1,6 @@
 [package]
 name = "writ-client"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Official Rust SDK for Writ — drive the local writ-agentd daemon and Writ Cloud (scrape, map, crawl) from one client"

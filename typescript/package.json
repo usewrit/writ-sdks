@@ -1,6 +1,6 @@
 {
   "name": "@usewrit/agent-sdk",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Official TypeScript SDK for Writ — drive the local writ-agentd daemon (workflows, runs, monitors, recording) and Writ Cloud (scrape, map, crawl) from one client.",
   "license": "MIT",
   "author": "The Writ Project Authors",

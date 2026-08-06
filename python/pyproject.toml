@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "writ-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "Official Python SDK for Writ — drive the local writ-agentd daemon and Writ Cloud (scrape, map, crawl) from one client"
 readme = "README.md"
 license = { text = "MIT" }

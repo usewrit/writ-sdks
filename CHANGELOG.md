@@ -6,9 +6,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-07-27
+## [1.0.0] — 2026-08-06
 
 First public release of all four SDKs.
+
+Versioned 1.0.0 to match [`writ`](https://github.com/usewrit/writ) and
+[`writ-mcp`](https://www.npmjs.com/package/writ-mcp): the coordinator, the agent
+and the clients are one product, so a single number answers "which version goes
+with which". An earlier 0.1.0 was tagged in this changelog but never reached npm,
+PyPI or crates.io, so no published version is being skipped.
 
 ### Added
 
