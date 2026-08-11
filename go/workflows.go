@@ -83,13 +83,23 @@ func (s *WorkflowsService) Run(ctx context.Context, id int64, opts *RunOptions) 
 // are query, not body, because they steer HOW the daemon answers rather than what
 // the run does — the body stays exactly the run's inputs.
 func runQuery(opts *RunOptions) url.Values {
-	if opts == nil || !opts.Wait {
+	if opts == nil {
 		return nil
 	}
 	q := url.Values{}
-	q.Set("wait", "true")
-	if opts.Timeout > 0 {
-		q.Set("timeout", strconv.FormatInt(int64(opts.Timeout/time.Second), 10))
+	if opts.Wait {
+		q.Set("wait", "true")
+		if opts.Timeout > 0 {
+			q.Set("timeout", strconv.FormatInt(int64(opts.Timeout/time.Second), 10))
+		}
+	}
+	// MaxAge is independent of Wait: reusing a recent answer is orthogonal to how
+	// the caller wants to be told about a fresh one.
+	if opts.MaxAge > 0 {
+		q.Set("max_age", strconv.FormatInt(int64(opts.MaxAge/time.Second), 10))
+	}
+	if len(q) == 0 {
+		return nil
 	}
 	return q
 }
@@ -211,7 +221,19 @@ func (s *WorkflowsService) ClearSession(ctx context.Context, id int64) error {
 // NOT cancelled — it keeps executing in the daemon; call Runs.Cancel to stop
 // it. Returns the final RunFeedItem (fetched once after the terminal event).
 // opts may be nil; opts.WaitTimeout never crosses the wire.
+//
+// opts.MaxAge is REJECTED here rather than ignored. RunAndWait exists to observe a
+// live run event-by-event, and a reused answer has no run to observe — there is no
+// run_id to subscribe to, so honouring it would mean returning something this
+// function cannot describe. Silently dropping it would be worse still: the caller
+// would believe they had opted into reuse and quietly pay for every run. Use Run or
+// RunWait for the freshness path.
 func (s *WorkflowsService) RunAndWait(ctx context.Context, id int64, opts *RunOptions) (*RunFeedItem, error) {
+	if opts != nil && opts.MaxAge > 0 {
+		return nil, fmt.Errorf(
+			"writ: RunAndWait cannot honour MaxAge — it follows a live run's events, and a " +
+				"reused result has no run to follow. Use Run or RunWait for the freshness path")
+	}
 	wait := 600 * time.Second
 	if opts != nil && opts.WaitTimeout > 0 {
 		wait = opts.WaitTimeout

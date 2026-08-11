@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   runRowId,
   USER_AGENT,
+  VERSION,
   WritAgent,
   WritApiError,
   WritConnectionError,
@@ -35,7 +36,10 @@ describe("auth + headers", () => {
     const req = server.requests[0]!;
     expect(req.headers.authorization).toBe("Bearer wlt_test_token");
     expect(req.headers["user-agent"]).toBe(USER_AGENT);
-    expect(USER_AGENT).toMatch(/^writ-sdk-typescript\/0\.1\.0$/);
+    // The SHAPE is the contract (DESIGN.md §2) — pinning the digits here just
+    // means every release ships a red test.
+    expect(USER_AGENT).toBe(`writ-sdk-typescript/${VERSION}`);
+    expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it("strips a trailing slash from an explicit baseUrl", async () => {

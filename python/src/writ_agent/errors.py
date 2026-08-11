@@ -80,6 +80,39 @@ class WritInsufficientCreditsError(WritApiError):
     """Crawl-page allotment spent AND the wallet can't cover the call. HTTP 402."""
 
 
+class WritPlanLimitError(WritApiError):
+    """A PLAN CEILING was hit, not a wallet balance. HTTP 402.
+
+    Raised for the backend's ``services.plan_enforcer.PlanLimitDenied`` family:
+    ``interval_too_short``, ``target_limit_js``/``_html``, ``concurrent_browsers``,
+    ``crawl_concurrency``, ``crawl_pages_exhausted`` and friends.
+
+    Deliberately NOT a :class:`WritInsufficientCreditsError`: topping up credits
+    does not clear a plan ceiling, and saying otherwise sends the caller to the
+    wrong fix. The two are told apart structurally — a plan denial always reports
+    the ceiling it hit as a numeric ``limit``.
+
+    Extra attributes: ``current`` (present usage), ``limit`` (the ceiling) and
+    ``upgrade_hint`` (the plan that would clear it, when the server names one).
+    """
+
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        body: Any,
+        *,
+        current: Any = None,
+        limit: Any = None,
+        upgrade_hint: Any = None,
+    ) -> None:
+        super().__init__(status, code, message, body)
+        self.current = current
+        self.limit = limit
+        self.upgrade_hint = upgrade_hint
+
+
 class WritRateLimitedError(WritApiError):
     """The keyless daily allowance (requests/day or pages/day) is exhausted. HTTP 429.
 

@@ -6,6 +6,8 @@
 import { discoverAgent, normalizeBaseUrl } from "./discovery.js";
 import type { DiscoveryOptions, ResolvedConnection } from "./discovery.js";
 import { apiErrorFrom, WritConnectionError } from "./errors.js";
+import { DEFAULT_RETRY_POLICY, withRetry } from "./retry.js";
+import type { RetryPolicy } from "./retry.js";
 import { USER_AGENT } from "./version.js";
 
 /** Query parameters — `undefined`/`null` entries are skipped. */
@@ -29,6 +31,13 @@ export interface RequestOptions {
 export interface HttpClientOptions extends DiscoveryOptions {
   /** Per-request timeout in milliseconds. Default 30 000 (DESIGN.md §3). */
   timeout?: number;
+  /**
+   * Override the transient-failure retry policy. Pass
+   * `{ maxAttempts: 1, ... }` to disable retrying. Unsafe methods are never
+   * retried against the local daemon regardless of this setting — it has no
+   * `Idempotency-Key` lane, so a repeated POST is a second resource.
+   */
+  retry?: Partial<RetryPolicy>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -37,10 +46,14 @@ export class HttpClient {
   readonly #opts: HttpClientOptions;
   readonly #fetch: typeof globalThis.fetch;
   readonly #timeoutMs: number;
+  readonly #retry: RetryPolicy;
   #conn: Promise<ResolvedConnection> | null = null;
 
   constructor(opts: HttpClientOptions = {}) {
     this.#opts = opts;
+    // retryUnsafeMethods is forced off: this transport talks to the LOCAL
+    // daemon, which has no idempotency lane to make a repeated POST safe.
+    this.#retry = { ...DEFAULT_RETRY_POLICY, ...opts.retry, retryUnsafeMethods: false };
     const custom = opts.fetch;
     this.#fetch = custom
       ? (input, init) => custom(input, init)
@@ -170,7 +183,15 @@ export class HttpClient {
 
     let res: Response;
     try {
-      res = await this.#fetch(url, { method, headers, body, signal: ctrl.signal });
+      // A stream is retried only until its headers arrive; once the body is
+      // flowing, resumption is the caller's business (runs.events does it with
+      // a cursor), because silently reconnecting would replay delivered frames.
+      res = await withRetry(
+        this.#retry,
+        method,
+        () => this.#fetch(url, { method, headers, body, signal: ctrl.signal }),
+        ctrl.signal,
+      );
     } catch (err) {
       finish();
       if (timedOut) {

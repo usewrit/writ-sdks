@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // MonitorsService wraps /v1/monitors (api/v1/monitors.rs; rows live in the
@@ -84,9 +85,42 @@ func (s *MonitorsService) Capacity(ctx context.Context) (json.RawMessage, error)
 	return out, nil
 }
 
-// RecentChanges is GET /v1/changes/recent (?limit) — the newest detected
-// content changes across ALL monitors (bare array of enriched change
-// objects, open shape).
-func (s *MonitorsService) RecentChanges(ctx context.Context, params url.Values) (Page[json.RawMessage], error) {
-	return getPage[json.RawMessage](ctx, s.c, "/v1/changes/recent", params)
+// RecentChanges is GET /v1/changes/recent — detected content changes across ALL
+// monitors, newest-first.
+//
+// opts.Since switches the daemon to an oldest-first keyset walk returning only
+// what was detected after that cursor. Prefer that for polling: newest-first
+// plus a limit silently drops changes whenever more than `limit` of them land
+// between two polls. For a continuous feed use Watch, which manages the cursor.
+func (s *MonitorsService) RecentChanges(ctx context.Context, opts *ChangeListOptions) (Page[RecentChange], error) {
+	return getPage[RecentChange](ctx, s.c, "/v1/changes/recent", opts.values())
+}
+
+// ChangeListOptions filters the daemon's recent-changes feed. It mirrors
+// CloudChangeListOptions so the same polling code drives either venue.
+type ChangeListOptions struct {
+	// Limit caps the page. Nil uses the daemon default.
+	Limit *int
+	// Since is an ISO-8601 cursor — the LastDetectedAt of the last row processed.
+	Since string
+	// SinceID is that row's id, breaking ties between changes sharing one
+	// timestamp so neither is lost at a page boundary.
+	SinceID *int64
+}
+
+func (o *ChangeListOptions) values() url.Values {
+	q := url.Values{}
+	if o == nil {
+		return q
+	}
+	if o.Limit != nil {
+		q.Set("limit", strconv.Itoa(*o.Limit))
+	}
+	if o.Since != "" {
+		q.Set("since", o.Since)
+	}
+	if o.SinceID != nil {
+		q.Set("since_id", strconv.FormatInt(*o.SinceID, 10))
+	}
+	return q
 }

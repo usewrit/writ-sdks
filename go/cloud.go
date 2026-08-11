@@ -9,35 +9,58 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
-// CloudService is the tiered Writ Cloud surface: scrape, map, and whole-site
-// crawl. Unlike the rest of this SDK (which talks to the LOCAL daemon), these
-// verbs run on Writ Cloud — never on the calling machine — with a Firecrawl-style
-// tier model resolved from the caller's credential:
+// CloudService is the tiered Writ Cloud surface: scrape, map, whole-site crawl
+// and monitors. Unlike the rest of this SDK (which talks to the LOCAL daemon),
+// these verbs run on Writ Cloud — never on the calling machine — with a
+// Firecrawl-style tier model resolved from the caller's credential:
 //
 //   - Metered — an API key (WithAPIKey → WRIT_API_KEY env) → the authed
-//     /api/crawl/* surface, billed per page against your plan. Scrape, Map, AND
-//     Crawl all work.
+//     /api/crawl/* and /api/targets/* surfaces, billed against your plan.
+//     Scrape, Map, Crawl AND Monitors all work.
 //   - Keyless — no key → the free /v1/keyless/* tier, daily-capped per install
-//     (a stable client-id header) and per IP. Scrape + Map only; Crawl returns
-//     *APIKeyRequiredError.
+//     (a stable client-id header) and per IP. Scrape + Map only; Crawl and
+//     Monitors return *APIKeyRequiredError.
 //
 // The credential fallback chain (WithAPIKey → WRIT_API_KEY → keyless) mirrors
 // Firecrawl's, so the same code scales from an anonymous test to a metered
 // production key with no branching at the call site. Mounted at client.Cloud.
+//
+// client.Cloud.Monitors mirrors the local daemon's client.Monitors verb for
+// verb, so the same program runs against either venue by changing which service
+// it talks to. The wire paths differ (the cloud calls the resource "targets")
+// and so does the JSON casing — the cloud answers checkPeriodMs where the daemon
+// answers check_period_ms — because these are two independently versioned
+// services, not one service behind two hostnames. Each type below carries the
+// tags of the service it actually speaks to.
 type CloudService struct {
 	apiKey           string
 	base             string
 	clientIDOverride string
 	httpc            *http.Client
+	retry            RetryPolicy
 
 	mu       sync.Mutex
 	clientID string // resolved (read/minted) keyless device id, cached
+
+	// Monitors is the cloud monitors surface — the same verbs as client.Monitors
+	// on the local daemon.
+	Monitors *CloudMonitorsService
+	// Automations is the cloud automations surface — the same verbs as
+	// client.Automations (trigger rules: event -> conditions -> actions).
+	Automations *CloudAutomationsService
+	// Personas is the cloud personas surface — the same verbs as client.Personas.
+	// Secret material is write-only; personas read back as Has* booleans.
+	Personas *CloudPersonasService
+	// Builds turns a website into a callable API — the REST twin of the MCP tool
+	// writ_website_to_api.
+	Builds *CloudBuildsService
 }
 
 const (
@@ -119,12 +142,27 @@ func newCloudService(c *Client) *CloudService {
 	if httpc == nil {
 		httpc = &http.Client{}
 	}
-	return &CloudService{
+	// Unsafe methods ARE retried on the cloud surface: every POST/PUT/PATCH
+	// below carries an Idempotency-Key, and the cloud replays the recorded
+	// response instead of executing a second time.
+	retry := DefaultRetryPolicy
+	if c.retry != nil {
+		retry = *c.retry
+	}
+	retry.RetryUnsafeMethods = true
+
+	svc := &CloudService{
 		apiKey:           apiKey,
 		base:             strings.TrimRight(base, "/"),
 		clientIDOverride: firstNonEmpty(c.clientID, os.Getenv("WRIT_CLIENT_ID")),
 		httpc:            httpc,
+		retry:            retry,
 	}
+	svc.Monitors = &CloudMonitorsService{c: svc}
+	svc.Automations = &CloudAutomationsService{c: svc}
+	svc.Personas = &CloudPersonasService{c: svc}
+	svc.Builds = &CloudBuildsService{c: svc}
+	return svc
 }
 
 // Tier is the tier this client will use: TierMetered when an API key is
@@ -184,12 +222,8 @@ func (s *CloudService) Map(ctx context.Context, url string, opts *CloudMapOption
 // keyless tier it returns *APIKeyRequiredError before any network call (use
 // Scrape/Map instead). Reuses the CrawlStartParams body shape.
 func (s *CloudService) Crawl(ctx context.Context, body CrawlStartParams) (*CrawlJob, error) {
-	if s.apiKey == "" {
-		return nil, &APIKeyRequiredError{APIError{
-			Status:  http.StatusPaymentRequired,
-			Code:    "api_key_required",
-			Message: "Whole-site crawl needs an API key — set WithAPIKey or WRIT_API_KEY. Keyless access covers scrape and map only.",
-		}}
+	if err := s.requireKey("Whole-site crawl"); err != nil {
+		return nil, err
 	}
 	data, err := s.send(ctx, http.MethodPost, "/api/crawl", body)
 	if err != nil {
@@ -205,18 +239,84 @@ func (s *CloudService) Crawl(ctx context.Context, body CrawlStartParams) (*Crawl
 // CrawlStatus polls a metered crawl's status (requires an API key). On the
 // keyless tier it returns *APIKeyRequiredError before any network call.
 func (s *CloudService) CrawlStatus(ctx context.Context, id int64) (*CrawlJob, error) {
-	if s.apiKey == "" {
-		return nil, &APIKeyRequiredError{APIError{
-			Status:  http.StatusPaymentRequired,
-			Code:    "api_key_required",
-			Message: "Crawl status needs an API key — set WithAPIKey or WRIT_API_KEY.",
-		}}
+	if err := s.requireKey("Crawl status"); err != nil {
+		return nil, err
 	}
 	data, err := s.send(ctx, http.MethodGet, fmt.Sprintf("/api/crawl/%d", id), nil)
 	if err != nil {
 		return nil, err
 	}
 	var out CrawlJob
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("writ: decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// KeylessCrawlPage is one page from a bounded keyless crawl.
+type KeylessCrawlPage struct {
+	URL      string `json:"url"`
+	Title    string `json:"title"`
+	Markdown string `json:"markdown"`
+}
+
+// KeylessCrawlLimits are the ceilings that applied, stated so a caller need not
+// discover them by hitting them.
+type KeylessCrawlLimits struct {
+	PageCap    int    `json:"page_cap"`
+	MaxDepth   int    `json:"max_depth"`
+	SameDomain bool   `json:"same_domain"`
+	Note       string `json:"note"`
+}
+
+// KeylessCrawlResult is a bounded, no-account crawl: a few same-domain pages
+// fetched in process and returned inline.
+//
+// Deliberately NOT a CrawlJob — that one is a fleet job you poll, and one type
+// must never pretend to be both shapes.
+type KeylessCrawlResult struct {
+	Verb   string             `json:"verb"`
+	URL    string             `json:"url"`
+	Pages  []KeylessCrawlPage `json:"pages"`
+	Counts struct {
+		Pages     int `json:"pages"`
+		Requested int `json:"requested"`
+	} `json:"counts"`
+	Tier       CloudTier          `json:"tier"`
+	Limits     KeylessCrawlLimits `json:"limits"`
+	Quota      *KeylessQuota      `json:"quota,omitempty"`
+	UpgradeURL string             `json:"upgrade_url,omitempty"`
+}
+
+// KeylessCrawlOptions tunes CrawlKeyless. Limit is a pointer so an unset value
+// lets the server apply its own cap.
+type KeylessCrawlOptions struct {
+	Search string
+	Limit  *int
+}
+
+// CrawlKeyless runs a bounded crawl with NO account — the free tier's version.
+//
+// Separate from Crawl because the two return genuinely different things: Crawl
+// queues a fleet job you poll, this fetches a few same-domain pages in process
+// and returns their markdown inline. Capped per request (see Limits.PageCap),
+// one level deep, and every page spends the same daily allowance as Scrape — so
+// the daily cap, not the per-request cap, is the real ceiling.
+func (s *CloudService) CrawlKeyless(ctx context.Context, url string, opts *KeylessCrawlOptions) (*KeylessCrawlResult, error) {
+	body := map[string]any{"url": url}
+	if opts != nil {
+		if opts.Search != "" {
+			body["search"] = opts.Search
+		}
+		if opts.Limit != nil {
+			body["limit"] = *opts.Limit
+		}
+	}
+	data, err := s.send(ctx, http.MethodPost, "/v1/keyless/crawl", body)
+	if err != nil {
+		return nil, err
+	}
+	var out KeylessCrawlResult
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("writ: decode response: %w", err)
 	}
@@ -238,46 +338,95 @@ func (s *CloudService) Quota(ctx context.Context) (*KeylessQuota, error) {
 
 // --- transport --------------------------------------------------------------
 
+// requireKey returns *APIKeyRequiredError when this verb needs a metered key and
+// none is configured, so a keyless caller fails BEFORE the network call rather
+// than on a 401 it cannot act on.
+func (s *CloudService) requireKey(what string) error {
+	if s.apiKey != "" {
+		return nil
+	}
+	return &APIKeyRequiredError{APIError{
+		Status:  http.StatusPaymentRequired,
+		Code:    "api_key_required",
+		Message: what + " needs an API key — set WithAPIKey or WRIT_API_KEY. Without one, Scrape, Map and the bounded CrawlKeyless still work.",
+	}}
+}
+
 // send performs a cloud request with the tier-appropriate auth header. A body
 // is JSON-encoded and sent with Content-Type application/json. Non-2xx
 // responses are mapped by cloudErrorFrom; network failures give *ConnectionError.
 func (s *CloudService) send(ctx context.Context, method, path string, body any) ([]byte, error) {
-	var reader io.Reader
+	return s.sendQuery(ctx, method, path, body, nil)
+}
+
+// sendQuery is send with a query string. An empty url.Values appends nothing —
+// "?limit=" is not the same as omitting limit, and the API rejects the former.
+func (s *CloudService) sendQuery(ctx context.Context, method, path string, body any, query url.Values) ([]byte, error) {
+	var payload []byte
 	hasBody := body != nil
 	if hasBody {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("writ: encode request body: %w", err)
 		}
-		reader = bytes.NewReader(b)
+		payload = b
 	}
-	req, err := http.NewRequestWithContext(ctx, method, s.base+path, reader)
-	if err != nil {
-		return nil, fmt.Errorf("writ: build request: %w", err)
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
-	if s.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiKey)
-	} else {
-		id, err := s.resolveClientID()
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set(clientIDHeader, id)
-	}
-	if hasBody {
-		req.Header.Set("Content-Type", "application/json")
+	url := s.base + path
+
+	// One key per logical call, reused by every retry of it — that is what makes
+	// repeating an unsafe method safe rather than duplicative.
+	idempotencyKey := ""
+	if !methodIsSafe(method) {
+		idempotencyKey = newIdempotencyKey()
 	}
 
-	resp, err := s.httpc.Do(req)
+	build := func() (*http.Request, error) {
+		var reader io.Reader
+		if payload != nil {
+			reader = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, url, reader)
+		if err != nil {
+			return nil, fmt.Errorf("writ: build request: %w", err)
+		}
+		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("Accept", "application/json")
+		if s.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+s.apiKey)
+		} else {
+			id, err := s.resolveClientID()
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set(clientIDHeader, id)
+		}
+		if hasBody {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if idempotencyKey != "" {
+			req.Header.Set("Idempotency-Key", idempotencyKey)
+		}
+		return req, nil
+	}
+
+	policy := s.retry
+	// A key we could not mint means we cannot prove a repeat is the same call,
+	// so this one request falls back to no-retry rather than risking a duplicate.
+	if !methodIsSafe(method) && idempotencyKey == "" {
+		policy.RetryUnsafeMethods = false
+	}
+
+	resp, err := doWithRetry(ctx, s.httpc, policy, method, build)
 	if err != nil {
-		return nil, &ConnectionError{URL: req.URL.String(), Err: err}
+		return nil, &ConnectionError{URL: url, Err: err}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, &ConnectionError{URL: req.URL.String(), Err: err}
+		return nil, &ConnectionError{URL: url, Err: err}
 	}
 	if resp.StatusCode/100 == 2 {
 		return data, nil
@@ -349,10 +498,31 @@ func cloudErrorFrom(status int, body []byte) error {
 	case status == http.StatusPaymentRequired && code == "api_key_required":
 		return &APIKeyRequiredError{base}
 	case status == http.StatusPaymentRequired:
+		// Two different 402s share this status. Distinguish them STRUCTURALLY
+		// rather than by a code allowlist that would drift as the backend adds
+		// limits: a plan denial (services.plan_enforcer.PlanLimitDenied) always
+		// reports the ceiling it hit as a numeric `limit`, while a credits/wallet
+		// 402 never does. Calling a plan ceiling "insufficient credits" would
+		// send the caller to top up a wallet that was never the problem.
+		if lim := rawInt(d, "limit"); lim != nil {
+			return &PlanLimitError{
+				APIError:    base,
+				Current:     derefInt(rawInt(d, "current")),
+				Limit:       *lim,
+				UpgradeHint: rawString(d, "upgrade_hint"),
+			}
+		}
 		return &InsufficientCreditsError{base}
 	default:
 		return &base
 	}
+}
+
+func derefInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // decodeQuota parses a quota body, accepting either {"quota": {...}} or a flat

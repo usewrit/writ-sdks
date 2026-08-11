@@ -141,6 +141,128 @@ type RunOptions struct {
 	// Timeout is how long the daemon may block when Wait is set. Clamped
 	// server-side to [1s, 3600s]; default 120s. Sent as a query parameter.
 	Timeout time.Duration `json:"-"`
+	// MaxAge reuses a recent answer instead of running: if this workflow's last
+	// successful run with the SAME inputs finished within this window, its data is
+	// returned and nothing executes. The response carries _cache.hit /
+	// _cache.age_seconds so a caller can always tell which it got.
+	//
+	// Zero (the default) always runs — existing callers are unaffected. Sent as a
+	// query parameter, never in the body: inside Inputs it would feed the workflow a
+	// stray value AND make every distinct MaxAge a different request.
+	MaxAge time.Duration `json:"-"`
+}
+
+// CacheStamp is the freshness provenance carried by every saved-crawl answer (and
+// by a reused workflow run).
+//
+// It rides in the BODY rather than only in headers because an SDK caller receives
+// a decoded payload, not an http.Response — a header-only signal would be
+// invisible exactly where it matters.
+type CacheStamp struct {
+	// Hit is true when the answer reused already-collected data (nothing crawled).
+	Hit bool `json:"hit"`
+	// AgeSeconds is how long ago the reused data was collected.
+	AgeSeconds int64 `json:"age_seconds,omitempty"`
+	// SourceCrawlID is the crawl whose data was served.
+	SourceCrawlID int64 `json:"source_crawl_id,omitempty"`
+}
+
+// CrawlDataTable is a page of a crawl's collected rows, in the Workflow Data API's
+// shape.
+type CrawlDataTable struct {
+	Columns   []string         `json:"columns,omitempty"`
+	Rows      []map[string]any `json:"rows,omitempty"`
+	Total     int64            `json:"total,omitempty"`
+	Truncated bool             `json:"truncated,omitempty"`
+}
+
+// CrawlDefinition is a SAVED crawl — a stored configuration with a stable slug.
+//
+// A CrawlJob is one RUN and its id dies with that run, so a crawl had no stable
+// handle to call. A definition owns the settings, so it can be re-run with exactly
+// those settings and — via MaxAge — answered from the data it already collected.
+type CrawlDefinition struct {
+	ID          int64  `json:"id"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	SeedURL     string `json:"seed_url"`
+	// Config is the saved start-crawl body. Send it back verbatim to edit.
+	Config map[string]any `json:"config,omitempty"`
+	// DefaultMaxAgeSeconds is the freshness used when a caller omits MaxAge; nil
+	// means always re-crawl.
+	DefaultMaxAgeSeconds *int64 `json:"default_max_age_seconds,omitempty"`
+	CreatedAt            string `json:"created_at,omitempty"`
+	UpdatedAt            string `json:"updated_at,omitempty"`
+	LastRunAt            string `json:"last_run_at,omitempty"`
+	RunURL               string `json:"run_url,omitempty"`
+	DataURL              string `json:"data_url,omitempty"`
+}
+
+// CrawlDefinitionList is the GET /v1/crawl/definitions envelope.
+type CrawlDefinitionList struct {
+	Definitions []CrawlDefinition `json:"definitions"`
+}
+
+// SaveCrawlParams is the POST /v1/crawl/definitions body. Set exactly one of
+// Config or FromCrawlID.
+type SaveCrawlParams struct {
+	Name        string `json:"name,omitempty"`
+	Slug        string `json:"slug,omitempty"`
+	Description string `json:"description,omitempty"`
+	// DefaultMaxAgeSeconds is applied when a caller omits MaxAge; omit for
+	// "always re-crawl".
+	DefaultMaxAgeSeconds *int64 `json:"default_max_age_seconds,omitempty"`
+	// Config is the settings to save.
+	Config *CrawlStartParams `json:"config,omitempty"`
+	// FromCrawlID captures the settings an existing crawl ran with. Preferred over
+	// rebuilding Config: a crawl's status view does not echo every knob, so a
+	// rebuilt config silently substitutes defaults.
+	FromCrawlID int64 `json:"from_crawl_id,omitempty"`
+}
+
+// RunSavedCrawlParams carries DELIVERY controls only — the crawl settings are the
+// saved ones, which is the whole point.
+type RunSavedCrawlParams struct {
+	// MaxAge reuses the last completed crawl when it finished within this window.
+	// Zero always re-crawls.
+	MaxAge time.Duration `json:"-"`
+	// Wait blocks until the crawl converges. Default false: a whole-site crawl
+	// routinely outlives an HTTP request.
+	Wait bool `json:"-"`
+	// Timeout is how long to block when Wait is set (server clamp 5s–300s).
+	Timeout time.Duration `json:"-"`
+	// Limit caps the rows of collected data inlined in the response.
+	Limit int64 `json:"-"`
+}
+
+// SavedCrawlRun is the POST /v1/crawl/definitions/:ref/run answer — two shapes
+// behind one call.
+//
+// On a freshness HIT (Cached true) Data is inline and nothing was crawled. On a
+// MISS a crawl was dispatched and Data is nil: poll StatusURL, or set Wait.
+type SavedCrawlRun struct {
+	Cached     bool            `json:"cached"`
+	Cache      *CacheStamp     `json:"_cache,omitempty"`
+	Definition CrawlDefinition `json:"definition"`
+	Crawl      CrawlJob        `json:"crawl"`
+	StatusURL  string          `json:"status_url,omitempty"`
+	DataURL    string          `json:"data_url,omitempty"`
+	Data       *CrawlDataTable `json:"data,omitempty"`
+	// CrawlID and Retryable appear only on the 504 overrun answer, which the SDK
+	// converts into a *RunTimeoutError so the crawl stays collectable.
+	CrawlID   int64 `json:"crawl_id,omitempty"`
+	Retryable bool  `json:"retryable,omitempty"`
+}
+
+// SavedCrawlData is the GET /v1/crawl/definitions/:ref/data answer — a pure read
+// that never dispatches a crawl.
+type SavedCrawlData struct {
+	Definition CrawlDefinition `json:"definition"`
+	Crawl      *CrawlJob       `json:"crawl,omitempty"`
+	AgeSeconds *float64        `json:"age_seconds,omitempty"`
+	DataURL    string          `json:"data_url,omitempty"`
+	Data       *CrawlDataTable `json:"data,omitempty"`
 }
 
 // RunStarted is the 202 response of POST /v1/workflows/:id/run.
@@ -347,6 +469,32 @@ type MonitorChanges struct {
 	HasMore      bool            `json:"has_more"`
 	Changes      json.RawMessage `json:"changes"`
 	UptimeChecks json.RawMessage `json:"uptime_checks"`
+}
+
+// RecentChange is one row of the GLOBAL recent-changes feed — the daemon's
+// GET /v1/changes/recent and the cloud's GET /api/targets/changes/recent, which
+// serialise the identical shape (store/changes.rs::RecentChange).
+//
+// It carries a feed row's worth of data: the monitor URL, which selector fired,
+// a server-truncated diff snippet, and the two timestamps. Full before/after
+// content lives on the per-monitor change routes.
+type RecentChange struct {
+	ID        int64  `json:"id"`
+	TargetID  int64  `json:"target_id"`
+	TargetURL string `json:"target_url"`
+	// TargetSelectorID / SelectorName identify which selector fired (nil for a
+	// whole-page monitor).
+	TargetSelectorID *int64  `json:"target_selector_id"`
+	SelectorName     *string `json:"selector_name"`
+	// DiffSnippet is truncated server-side to a feed-friendly length.
+	DiffSnippet *string `json:"diff_snippet"`
+	// FirstDetectedAt is when this content first differed. LastDetectedAt moves
+	// forward every time the SAME difference is seen again, which is why it — not
+	// FirstDetectedAt — is the feed's sort key and the value a cursor advances to.
+	// A row you have already processed legitimately reappears with a later
+	// LastDetectedAt: that is a fresh detection, not a duplicate.
+	FirstDetectedAt string `json:"first_detected_at"`
+	LastDetectedAt  string `json:"last_detected_at"`
 }
 
 // Selector is a target_selectors row (store/target_selectors.rs).

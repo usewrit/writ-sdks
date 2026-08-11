@@ -71,28 +71,84 @@ func (s *RunsService) DataCSV(ctx context.Context, runID int64) (string, error) 
 //
 // The sequence ends after a terminal event (a run that already finished
 // yields exactly one). Keep-alive comment frames are ignored. Cancelling ctx
-// tears the stream down (surfaced as a *ConnectionError). No reconnect logic:
-// a dropped stream ends the sequence with an error — RunAndWait handles the
-// polling fallback.
+// ends the sequence.
+//
+// A stream that DROPS before a terminal event is reconnected automatically, up
+// to EventsMaxReconnects times with backoff. Reconnecting replays the run's
+// events from the start, so already-delivered frames are suppressed by
+// sequence: the caller sees one continuous, gap-free, duplicate-free stream
+// across a proxy timeout or a daemon restart. Only when reconnection is
+// exhausted does the sequence yield the error and end.
 func (s *RunsService) Events(ctx context.Context, runID int64) iter.Seq2[RunEvent, error] {
 	path := fmt.Sprintf("/v1/runs/%d/events", runID)
 	return func(yield func(RunEvent, error) bool) {
-		resp, err := s.c.openStream(ctx, path)
-		if err != nil {
-			yield(RunEvent{}, err)
-			return
-		}
-		defer resp.Body.Close()
-		for ev, evErr := range sseFrames(resp.Body, resp.Request.URL.String()) {
-			if !yield(ev, evErr) {
+		// Frames already handed to the caller. The daemon has no Last-Event-ID
+		// lane, so resumption is client-side: replay and skip what we have seen.
+		delivered := 0
+		attempts := 0
+
+		for {
+			resp, err := s.c.openStream(ctx, path)
+			if err != nil {
+				yield(RunEvent{}, err)
 				return
 			}
-			if evErr != nil || ev.Terminal() {
+
+			seen := 0
+			var streamErr error
+			terminal := false
+			stopped := false
+
+			for ev, evErr := range sseFrames(resp.Body, path) {
+				if evErr != nil {
+					streamErr = evErr
+					break
+				}
+				seen++
+				if seen <= delivered {
+					continue // replayed frame from before the drop
+				}
+				delivered = seen
+				if !yield(ev, nil) {
+					stopped = true
+					break
+				}
+				if ev.Terminal() {
+					terminal = true
+					break
+				}
+			}
+			resp.Body.Close()
+
+			if stopped || terminal {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			// A clean EOF with no terminal event is a drop too — the run is still
+			// going and the connection simply went away.
+			attempts++
+			if attempts > EventsMaxReconnects {
+				if streamErr == nil {
+					streamErr = &ConnectionError{
+						URL: path,
+						Err: fmt.Errorf("stream ended before a terminal event after %d reconnects", EventsMaxReconnects),
+					}
+				}
+				yield(RunEvent{}, streamErr)
+				return
+			}
+			if sleepCtx(ctx, DefaultRetryPolicy.backoff(attempts)) != nil {
 				return
 			}
 		}
 	}
 }
+
+// EventsMaxReconnects bounds how many times Events transparently reconnects a
+// dropped stream before giving up and surfacing the error.
+const EventsMaxReconnects = 5
 
 // Cancel is POST /v1/runs/:id/cancel. A 202 answers
 // {run_id, status:"cancel_requested"}; a 409 answers

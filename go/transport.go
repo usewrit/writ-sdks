@@ -64,18 +64,31 @@ func (c *Client) call(ctx context.Context, method, path string, q url.Values, bo
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
-	req, err := c.newRequest(ctx, method, path, q, reader, contentType)
-	if err != nil {
-		return 0, nil, fmt.Errorf("writ: build request: %w", err)
+	// Buffer the body so every retry attempt can replay it — an io.Reader is
+	// consumed by the first attempt and the second would send an empty body.
+	var payload []byte
+	if reader != nil {
+		buf, err := io.ReadAll(reader)
+		if err != nil {
+			return 0, nil, fmt.Errorf("writ: read request body: %w", err)
+		}
+		payload = buf
 	}
-	resp, err := c.http().Do(req)
+	build := func() (*http.Request, error) {
+		var r io.Reader
+		if payload != nil {
+			r = bytes.NewReader(payload)
+		}
+		return c.newRequest(ctx, method, path, q, r, contentType)
+	}
+	resp, err := doWithRetry(ctx, c.http(), c.retryPolicy(), method, build)
 	if err != nil {
-		return 0, nil, &ConnectionError{URL: req.URL.String(), Err: err}
+		return 0, nil, &ConnectionError{URL: c.baseURL + path, Err: err}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return resp.StatusCode, nil, &ConnectionError{URL: req.URL.String(), Err: err}
+		return resp.StatusCode, nil, &ConnectionError{URL: c.baseURL + path, Err: err}
 	}
 	if resp.StatusCode/100 == 2 || (allow != nil && allow(resp.StatusCode)) {
 		return resp.StatusCode, data, nil
@@ -125,14 +138,20 @@ func (c *Client) openStream(ctx context.Context, path string) (*http.Response, e
 	if err := c.ready(ctx); err != nil {
 		return nil, err
 	}
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil, nil, "")
-	if err != nil {
-		return nil, fmt.Errorf("writ: build request: %w", err)
+	build := func() (*http.Request, error) {
+		req, err := c.newRequest(ctx, http.MethodGet, path, nil, nil, "")
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		return req, nil
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	resp, err := c.http().Do(req)
+	// Retry applies to ESTABLISHING the stream only. Once headers are in, a
+	// mid-body drop is the caller's to resume (Runs.Events does, with a cursor);
+	// silently reconnecting here would replay frames the caller already saw.
+	resp, err := doWithRetry(ctx, c.http(), c.retryPolicy(), http.MethodGet, build)
 	if err != nil {
-		return nil, &ConnectionError{URL: req.URL.String(), Err: err}
+		return nil, &ConnectionError{URL: c.baseURL + path, Err: err}
 	}
 	if resp.StatusCode/100 != 2 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

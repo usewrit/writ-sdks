@@ -7,6 +7,8 @@
 //! daemon columns arrive as SQLite `0/1` integers and are typed `Option<i64>` here
 //! to match the wire exactly.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -624,6 +626,74 @@ pub struct WsTicket {
 /// [`CrawlJob::data_workflow_id`] workflow, read back through the Data API. As with
 /// monitor rows, the boolean columns arrive as SQLite `0/1` ints and stay typed as
 /// `i64` (not coerced).
+/// Display naming a crawl view carries, in the TWO shapes two different services
+/// answer with:
+///
+/// - the LOCAL daemon sends a bare string — `"Dragnet"`
+/// - Writ Cloud sends an object — `{"crawl": "Dragnet", "agent": "Scribe"}`
+///
+/// Typing this as a plain `String` made [`CloudClient::crawl`] fail to decode
+/// against the real cloud; a stub server with a hand-written body never showed
+/// it. Accepting both keeps ONE [`CrawlJob`] usable from either venue, which is
+/// the point of the local/cloud symmetry.
+///
+/// [`CloudClient::crawl`]: crate::CloudClient::crawl
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Brand {
+    /// The daemon form: just the crawler's display name.
+    Name(String),
+    /// The cloud form: the crawler's name plus the AI executor's.
+    Pair {
+        /// Crawler display name.
+        crawl: String,
+        /// AI-executor display name.
+        #[serde(default)]
+        agent: Option<String>,
+    },
+}
+
+impl Default for Brand {
+    fn default() -> Self {
+        Brand::Name(String::new())
+    }
+}
+
+impl Brand {
+    /// The crawler's display name, whichever shape arrived.
+    pub fn crawl(&self) -> &str {
+        match self {
+            Brand::Name(name) => name,
+            Brand::Pair { crawl, .. } => crawl,
+        }
+    }
+
+    /// The AI-executor display name — cloud only, `None` from the daemon.
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            Brand::Name(_) => None,
+            Brand::Pair { agent, .. } => agent.as_deref(),
+        }
+    }
+}
+
+/// An explicit `"brand": null` must decode to the empty default, not fail the
+/// whole crawl view: it is a display label. `#[serde(default)]` alone does not
+/// cover this — it handles an ABSENT key, while a present null is still fed to
+/// the untagged enum, which has no null variant.
+fn de_brand<'de, D>(deserializer: D) -> std::result::Result<Brand, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Brand>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+impl std::fmt::Display for Brand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.crawl())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CrawlJob {
@@ -667,8 +737,9 @@ pub struct CrawlJob {
     pub error: Option<String>,
     /// boolean as `0/1`.
     pub cancel_requested: i64,
-    /// Always `"Dragnet"`.
-    pub brand: String,
+    /// Display naming for this crawl. Arrives in TWO shapes — see [`Brand`].
+    #[serde(deserialize_with = "de_brand")]
+    pub brand: Brand,
     /// Daemon-computed convenience: true for the terminal states.
     pub is_terminal: bool,
     pub created_at: String,
@@ -734,6 +805,166 @@ pub struct CrawlStartParams {
 #[serde(default)]
 pub struct CrawlList {
     pub crawls: Vec<CrawlJob>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+// ---------------------------------------------------------------------------
+// saved crawls (the callable crawl API)
+//
+// A [`CrawlJob`] is one RUN and its id dies with that run, so a crawl had no
+// stable handle to call. A definition owns the settings, so it can be re-run with
+// exactly those settings and — via `max_age` — answered from the data it already
+// collected.
+// ---------------------------------------------------------------------------
+
+/// A SAVED crawl — a stored configuration with a stable slug.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CrawlDefinition {
+    pub id: i64,
+    pub slug: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub seed_url: String,
+    /// The saved start-crawl body. Send it back verbatim to edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
+    /// Freshness used when a caller omits `max_age`; `None` = always re-crawl.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_age_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// `GET /v1/crawl/definitions` — `{definitions: [...]}`, not a page envelope.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CrawlDefinitionList {
+    pub definitions: Vec<CrawlDefinition>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// Body for saving a crawl. Set exactly one of `config` / `from_crawl_id`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SaveCrawlParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Freshness applied when a caller omits `max_age`; omit for "always re-crawl".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_max_age_seconds: Option<i64>,
+    /// The settings to save.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<CrawlStartParams>,
+    /// Capture the settings an existing crawl ran with. Preferred over rebuilding
+    /// `config`: a crawl's status view does not echo every knob, so a rebuilt config
+    /// silently substitutes defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_crawl_id: Option<i64>,
+}
+
+/// DELIVERY controls for a saved-crawl run. Never crawl settings — those are saved.
+#[derive(Debug, Clone, Default)]
+pub struct RunSavedCrawlParams {
+    /// Reuse the last completed crawl when it finished within this window. `None` or
+    /// zero always re-crawls.
+    pub max_age: Option<Duration>,
+    /// Block until the crawl converges. Default false: a whole-site crawl routinely
+    /// outlives an HTTP request.
+    pub wait: bool,
+    /// How long to block when `wait` is set (server clamp 5–300 s).
+    pub timeout: Option<Duration>,
+    /// Cap on the rows of collected data inlined in the response.
+    pub limit: Option<i64>,
+}
+
+/// Freshness provenance carried by every saved-crawl answer.
+///
+/// Stamped into the BODY rather than only into headers, because an SDK caller
+/// receives a decoded payload, not a `Response` — a header-only signal would be
+/// invisible exactly where it matters.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheStamp {
+    /// True when the answer reused already-collected data (nothing was crawled).
+    pub hit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<i64>,
+    /// The crawl whose data was served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_crawl_id: Option<i64>,
+}
+
+/// A page of a crawl's collected rows, in the Workflow Data API's shape.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CrawlDataTable {
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub rows: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<i64>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// `POST /v1/crawl/definitions/:ref/run` — two shapes behind one call.
+///
+/// On a freshness HIT (`cached` true) `data` is inline and nothing was crawled. On
+/// a MISS a crawl was dispatched and `data` is `None`: poll `status_url`, or set
+/// `wait`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SavedCrawlRun {
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(rename = "_cache", default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CacheStamp>,
+    #[serde(default)]
+    pub definition: CrawlDefinition,
+    #[serde(default)]
+    pub crawl: CrawlJob,
+    #[serde(default)]
+    pub status_url: Option<String>,
+    #[serde(default)]
+    pub data_url: Option<String>,
+    #[serde(default)]
+    pub data: Option<CrawlDataTable>,
+    /// Present only on the `504` overrun answer, which the SDK converts into
+    /// [`crate::WritError::RunTimeout`] so the crawl stays collectable.
+    #[serde(default)]
+    pub crawl_id: Option<i64>,
+    #[serde(default)]
+    pub retryable: bool,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// `GET /v1/crawl/definitions/:ref/data` — a pure read that never crawls.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SavedCrawlData {
+    #[serde(default)]
+    pub definition: CrawlDefinition,
+    #[serde(default)]
+    pub crawl: Option<CrawlJob>,
+    #[serde(default)]
+    pub age_seconds: Option<f64>,
+    #[serde(default)]
+    pub data_url: Option<String>,
+    #[serde(default)]
+    pub data: Option<CrawlDataTable>,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -873,6 +1104,177 @@ pub struct DatasetSearchResult {
     pub extra: Extra,
 }
 
+// ---------------------------------------------------------------------------
+// file assets — a run's bindable INPUTS and its captured OUTPUTS
+// ---------------------------------------------------------------------------
+
+/// One bindable file input on a workflow — see [`file_slots`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSlot {
+    /// Key to use in the run's `files` map (`RunOptions::files`).
+    pub slot: String,
+    pub label: String,
+    pub is_multiple: bool,
+    /// File pinned on the step. `Some` ⇒ the run works with NO binding at all,
+    /// and binding one overrides it for that run only.
+    pub default_file_id: Option<String>,
+    pub default_filename: Option<String>,
+    /// `true` when the workflow's author named the slot; `false` when it is
+    /// keyed on the step id because the step only pins a file.
+    pub declared: bool,
+}
+
+/// A file a run CAPTURED (a `wait_for_download` step) — see [`output_files`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputFile {
+    /// Handle in the vault — read the bytes with `client.files().content(..)`.
+    pub file_id: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub content_type: String,
+    /// The step's `output_key`, when it named the capture for later reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_key: Option<String>,
+}
+
+fn first_non_empty(vals: [Option<&str>; 3]) -> Option<String> {
+    vals.into_iter()
+        .flatten()
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// The file inputs of a workflow — the valid keys for the run's `files` map.
+///
+/// Every `upload` step is a file input, of one of two kinds:
+///
+/// * the step names a `file_slot` — an abstract slot whose file the CALLER
+///   supplies. With no [`FileSlot::default_file_id`] it must be bound or the
+///   step fails;
+/// * the step pins a concrete file. It is keyed `step:<step id>` and carries
+///   that file as the default, so the workflow runs untouched — bind it only to
+///   run against a DIFFERENT file.
+///
+/// Derived from `workflow.steps` on the client, so it costs no extra round trip
+/// and works against any daemon version. A step's binding lives in `config` when
+/// the editor wrote it and in `options` when the recorder did; both are read,
+/// `config` winning as the explicit later edit. De-duped by slot,
+/// order-preserving; empty when the workflow has no upload steps.
+pub fn file_slots(workflow: &Workflow) -> Vec<FileSlot> {
+    let Some(Value::Array(steps)) = workflow.steps.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (i, step) in steps.iter().enumerate() {
+        let Some(obj) = step.as_object() else {
+            continue;
+        };
+        if obj.get("type").and_then(Value::as_str) != Some("upload") {
+            continue;
+        }
+        let sub = |key: &str, field: &str| -> Option<String> {
+            obj.get(key)
+                .and_then(Value::as_object)
+                .and_then(|o| o.get(field))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let named = sub("config", "file_slot").or_else(|| sub("options", "file_slot"));
+        let declared = named.is_some();
+        let slot = match named {
+            Some(s) => s,
+            // Keyed on the step's own id, never an ordinal: a binding has to
+            // survive the steps being reordered or one being disabled.
+            None => match obj
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => format!("step:{id}"),
+                None => format!("upload:{}", i + 1),
+            },
+        };
+        if !seen.insert(slot.clone()) {
+            continue;
+        }
+        let default_file_id = sub("config", "file_id").or_else(|| sub("options", "file_id"));
+        let cfg_name = sub("config", "file_name");
+        let opt_filename = sub("options", "filename");
+        let opt_file_name = sub("options", "file_name");
+        let default_filename = first_non_empty([
+            cfg_name.as_deref(),
+            opt_filename.as_deref(),
+            opt_file_name.as_deref(),
+        ]);
+        let cfg_label = sub("config", "label");
+        let opt_label = sub("options", "label");
+        let label = first_non_empty([
+            cfg_label.as_deref(),
+            opt_label.as_deref(),
+            default_filename.as_deref(),
+        ])
+        .unwrap_or_else(|| {
+            if declared {
+                slot.replace('_', " ")
+            } else {
+                format!("File {}", i + 1)
+            }
+        });
+        let is_multiple = ["config", "options"].iter().any(|k| {
+            obj.get(*k)
+                .and_then(Value::as_object)
+                .and_then(|o| o.get("is_multiple"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        });
+        out.push(FileSlot {
+            slot,
+            label,
+            is_multiple,
+            default_file_id,
+            default_filename,
+            declared,
+        });
+    }
+    out
+}
+
+/// Files captured by a run's download steps.
+///
+/// A `wait_for_download` step stores what the browser downloaded and reports it
+/// as `result_data.output_files`. Accepts the terminal run document, its
+/// `result_data`, or a results payload — whichever you hold — and returns an
+/// empty vec when the run captured nothing.
+pub fn output_files(payload: &Value) -> Vec<OutputFile> {
+    let pick = |v: Option<&Value>| -> Vec<OutputFile> {
+        v.and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|f| serde_json::from_value(f.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for candidate in [
+        payload.get("output_files"),
+        payload
+            .get("result_data")
+            .and_then(|r| r.get("output_files")),
+        payload.get("results").and_then(|r| r.get("output_files")),
+    ] {
+        let files = pick(candidate);
+        if !files.is_empty() {
+            return files;
+        }
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,7 +1342,7 @@ mod tests {
         assert!(c.cancel_requested_now);
         assert_eq!(c.job.id, 5);
         assert_eq!(c.job.status, "stopping");
-        assert_eq!(c.job.brand, "Dragnet");
+        assert_eq!(c.job.brand.crawl(), "Dragnet");
         assert_eq!(c.job.data_workflow_id, Some(77));
         assert_eq!(c.job.include_paths, vec!["^/docs".to_string()]);
         // Unknown fields still land in CrawlJob.extra, and the flag is NOT among them.
@@ -965,6 +1367,98 @@ mod tests {
         assert!(body.get("persona_id").is_none());
         assert!(body.get("page_budget").is_none());
         assert!(body.get("include_paths").is_none());
+    }
+
+    /// The slot rule is shared with the coordinator, the run form and the replay
+    /// engine, so these cases mirror the ones asserted there.
+    fn upload_workflow() -> Workflow {
+        serde_json::from_value(json!({
+            "id": 1, "name": "wf",
+            "steps": [
+                {"id":"s1","type":"upload","config":{"file_slot":"resume","label":"Your CV"}},
+                {"id":"s2","type":"upload","config":{"file_id":"file_pinned","file_name":"invoice.pdf"}},
+                {"id":"s3","type":"upload","options":{"file_id":"file_rec","filename":"scan.png"}},
+                {"id":"s4","type":"click","config":{"selector":".go"}}
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn file_slots_covers_every_upload_step() {
+        let slots = file_slots(&upload_workflow());
+        assert_eq!(
+            slots.iter().map(|s| s.slot.as_str()).collect::<Vec<_>>(),
+            ["resume", "step:s2", "step:s3"]
+        );
+        // A declared slot with no pinned file MUST be bound by the caller.
+        assert!(slots[0].declared);
+        assert_eq!(slots[0].default_file_id, None);
+        assert_eq!(slots[0].label, "Your CV");
+        // A pinned step carries its file as the default → runs unbound.
+        assert!(!slots[1].declared);
+        assert_eq!(slots[1].default_file_id.as_deref(), Some("file_pinned"));
+        assert_eq!(slots[1].default_filename.as_deref(), Some("invoice.pdf"));
+        // The recorder writes options.file_id/filename; the editor writes config.*.
+        assert_eq!(slots[2].default_file_id.as_deref(), Some("file_rec"));
+        assert_eq!(slots[2].default_filename.as_deref(), Some("scan.png"));
+    }
+
+    #[test]
+    fn file_slots_config_wins_over_options_and_dedupes() {
+        let wf: Workflow = serde_json::from_value(json!({
+            "id": 1, "name": "wf",
+            "steps": [
+                {"id":"a","type":"upload","config":{"file_id":"edited"},"options":{"file_id":"recorded"}},
+                {"id":"b","type":"upload","config":{"file_slot":"cv"}},
+                {"id":"c","type":"upload","config":{"file_slot":"cv"}}
+            ]
+        }))
+        .unwrap();
+        let slots = file_slots(&wf);
+        assert_eq!(slots.len(), 2, "the duplicate `cv` slot collapses");
+        assert_eq!(slots[0].default_file_id.as_deref(), Some("edited"));
+        assert_eq!(slots[1].slot, "cv");
+    }
+
+    #[test]
+    fn file_slots_is_empty_without_uploads_and_never_panics() {
+        for steps in [
+            json!([]),
+            json!([{"id":"x","type":"click"}]),
+            json!("junk"),
+            json!(null),
+        ] {
+            let wf: Workflow =
+                serde_json::from_value(json!({"id":1,"name":"wf","steps": steps})).unwrap();
+            assert!(file_slots(&wf).is_empty());
+        }
+    }
+
+    #[test]
+    fn output_files_reads_every_envelope() {
+        let captured = json!({
+            "file_id":"file_dl","filename":"report.csv","size":12,
+            "content_type":"text/csv","output_key":"report"
+        });
+        for payload in [
+            json!({"result_data": {"output_files": [captured.clone()]}}),
+            json!({"output_files": [captured.clone()]}),
+            json!({"results": {"output_files": [captured.clone()]}}),
+        ] {
+            let files = output_files(&payload);
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].file_id, "file_dl");
+            assert_eq!(files[0].size, 12);
+            assert_eq!(files[0].output_key.as_deref(), Some("report"));
+        }
+    }
+
+    #[test]
+    fn output_files_is_empty_when_nothing_captured() {
+        for payload in [json!({"result_data": {}}), json!({}), json!("junk")] {
+            assert!(output_files(&payload).is_empty());
+        }
     }
 
     #[test]

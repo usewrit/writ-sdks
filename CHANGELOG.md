@@ -6,6 +6,82 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-11
+
+1.0.0 shipped the core: discovery, workflows, runs with SSE, data, monitors,
+pagination and typed errors. Everything below has landed since and is released
+here together. All of it is additive — no 1.0.0 API changed shape, so upgrading
+is a version bump.
+
+### Added
+
+**Production behaviour, in all four SDKs.**
+
+- **Retries that cannot duplicate work.** Transient failures (429, 408/425,
+  502/503/504, dropped sockets) retry with exponential backoff and full jitter,
+  honouring `Retry-After` — except when the server asks for longer than the SDK
+  will sleep, where you get the real response, which carries the reset time.
+  `GET`/`HEAD`/`OPTIONS` always retry; `POST`/`PUT`/`PATCH` retry **only** where
+  the server honours `Idempotency-Key` (Writ Cloud, self-hosted coordinator), and
+  every attempt of one logical call reuses the same key. Against the local agent,
+  which has no such lane, an unsafe method is never retried — a second `POST`
+  there is a second monitor.
+- **`monitors.watch()`** — detected changes as a continuous stream, in detection
+  order, with no gaps and no repeats. Polling that feed by hand is harder than it
+  looks: the newest-first view silently drops changes when more than `limit` land
+  between polls, and a change row is *updated* rather than re-inserted when the
+  same difference recurs, so an id you already processed can resurface. `watch()`
+  drives the server's keyset cursor, and a resurfaced id arrives as what it
+  actually is — a fresh detection.
+- **Webhook verification and signing.** `verify_webhook` / `verifyWebhook` /
+  `VerifyWebhook` authenticates a delivery in constant time and enforces the
+  replay window. `X-Writ-Signature-V1` covers `"{timestamp}." + body`; the
+  body-only `X-Writ-Signature` is refused by default, because nothing ties it to
+  a point in time.
+- **`max_age` freshness**, one contract on the workflow and crawl sides: "an
+  answer collected within this many seconds is acceptable, otherwise go get it
+  again". Every answer carries `_cache.hit` / `_cache.age_seconds` in the BODY,
+  not only in headers — an SDK caller receives a decoded payload and would never
+  see a header. Omit it and nothing changes: work always runs.
+- **Auto-pagination** over `limit`/`offset` endpoints.
+
+**Cloud and self-host surfaces.** Monitors (including `run` and `watch`),
+automations, personas and builds, plus **saved crawls**: a crawl row is one RUN
+whose id dies with it, so `crawl.save(...)` stores the settings under a stable
+slug, `crawl.run_saved(...)` re-runs exactly those (or returns what it already
+collected when `max_age` allows), and `crawl.saved_data(...)` reads at any age
+and never crawls. These speak the coordinator's own API, so they run against a
+self-hosted instance exactly as they do against Writ Cloud.
+
+**File assets.** All four SDKs already sent the run body's `files` map, but a
+caller had no way to learn which keys were valid, and no typed view of what a run
+downloaded. Both are now answerable without a round trip:
+
+- **All four** — `fileSlots(workflow)` / `file_slots(workflow)` / `FileSlots(wf)`
+  reports a workflow's file inputs: the valid keys for the run's `files` map,
+  each with the file pinned on the step as its default. Every `upload` step is an
+  input — one that names a `file_slot` must be bound by the caller; one that only
+  pins a file is keyed `step:<step id>` and runs untouched, so binding it is an
+  override rather than a requirement. Derived from `workflow.steps` on the
+  client, so it works against any daemon version.
+- **All four** — `outputFiles(run)` / `output_files(run)` / `OutputFiles(payload)`
+  returns the files a run CAPTURED via `wait_for_download`, typed as
+  `OutputFile { file_id, filename, size, content_type, output_key? }`. Reads the
+  terminal run document, its `result_data`, or a results payload. The bytes come
+  back through the ordinary files API.
+- **OpenAPI** — documented the `OutputFile` schema and noted that a run's `data`
+  carries `output_files` when the recipe downloads anything.
+
+### Fixed
+
+- **TypeScript, Python** — the internal version constants (`src/version.ts`,
+  `_version.py`) still read `0.1.0` after the 1.0.0 release, so both packages
+  sent a `User-Agent` two majors behind themselves. Both are now bumped with
+  the manifest, and the tests that assert the header derive it from the
+  constant instead of hardcoding the digits, so a release can no longer ship
+  with them out of step.
+- **Python** — `CacheStamp` was imported twice in `writ_agent/__init__.py`.
+
 ## [1.0.0] — 2026-08-06
 
 First public release of all four SDKs.
@@ -83,4 +159,4 @@ Shared behaviour, identical in every language and covered by tests:
   calls will fail until the service launches or `WRIT_CLOUD_URL` is pointed
   elsewhere.
 - OAuth, MCP, OpenAI-compatible and AI-assist surfaces are out of scope for
-  0.1.x.
+  1.0.x.

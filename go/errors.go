@@ -98,6 +98,25 @@ type InsufficientCreditsError struct {
 	APIError
 }
 
+// PlanLimitError means a PLAN CEILING was hit, not a wallet balance (HTTP 402,
+// backend services.plan_enforcer.PlanLimitDenied). Codes include
+// interval_too_short, target_limit_js/html, concurrent_browsers,
+// crawl_concurrency, crawl_pages_exhausted, team_member_limit and friends.
+//
+// It is deliberately NOT an InsufficientCreditsError: topping up credits does
+// not clear a plan ceiling, and telling a caller otherwise sends them to the
+// wrong fix. Current/Limit/UpgradeHint carry the server's own numbers when it
+// reported them (0 / "" when it did not).
+type PlanLimitError struct {
+	APIError
+	// Current is the caller's present usage, per the server.
+	Current int
+	// Limit is the ceiling that was hit.
+	Limit int
+	// UpgradeHint names the plan that would clear it, when the server said so.
+	UpgradeHint string
+}
+
 // RateLimitedError means the keyless daily allowance (requests/day or pages/day,
 // per device or IP) is exhausted (HTTP 429). ResetAt is when the allowance
 // refills; add an API key for a full metered quota. Embeds APIError; the

@@ -103,6 +103,7 @@ def workflows_run(
     files: dict[str, str] | None,
     wait: bool = False,
     timeout: int | None = None,
+    max_age: int | None = None,
 ) -> Op:
     body = _body(
         {
@@ -112,7 +113,13 @@ def workflows_run(
             "files": files,
         }
     )
-    params = _body({"wait": True if wait else None, "timeout": timeout}) or None
+    # `max_age` is a DELIVERY control, so it rides in the query string and never in
+    # the body — putting it in `inputs` would both feed a stray value to the
+    # workflow and make every distinct max_age a different request.
+    params = (
+        _body({"wait": True if wait else None, "timeout": timeout, "max_age": max_age})
+        or None
+    )
     # 504 is a documented, RECOVERABLE outcome of waiting (the run is still going and the
     # run_id is still valid), so it comes back as a RESULT for the caller to convert into a
     # WritRunTimeoutError — not as a generic HTTP error that loses the id.
@@ -577,6 +584,64 @@ def crawl_get(crawl_id: int) -> Op:
 def crawl_cancel(crawl_id: int) -> Op:
     # Always the refreshed view (+ cancel_requested_now) — never a 409.
     return Op("POST", f"/v1/crawl/{crawl_id}/cancel")
+
+
+# --- saved crawls (the callable crawl API) ----------------------------------
+#
+# A crawl row is one RUN; its id dies with that run. A saved crawl owns the
+# settings under a stable slug, so it can be re-run with exactly those settings
+# and — via `max_age` — answered from the data it already collected.
+
+
+def crawl_definitions_list(limit: int | None) -> Op:
+    # Returns {"definitions": [...]} — not a Page envelope.
+    return Op("GET", "/v1/crawl/definitions", params=_clean({"limit": limit}))
+
+
+def crawl_definition_create(body: dict[str, Any]) -> Op:
+    return Op("POST", "/v1/crawl/definitions", json_body=_body(body))
+
+
+def crawl_definition_get(ref: int | str) -> Op:
+    return Op("GET", f"/v1/crawl/definitions/{ref}")
+
+
+def crawl_definition_update(ref: int | str, body: dict[str, Any]) -> Op:
+    return Op("PATCH", f"/v1/crawl/definitions/{ref}", json_body=_body(body))
+
+
+def crawl_definition_delete(ref: int | str) -> Op:
+    return Op("DELETE", f"/v1/crawl/definitions/{ref}")
+
+
+def crawl_definition_run(
+    ref: int | str,
+    max_age: int | None,
+    wait: bool,
+    timeout: int | None,
+    limit: int | None,
+) -> Op:
+    # 202 (dispatched) and 504 (still running past `wait`) are both DOCUMENTED
+    # outcomes carrying a usable crawl id, so neither is an error here. 504 decodes
+    # into a WritRunTimeoutError that keeps the id, exactly like workflows_run.
+    return Op(
+        "POST",
+        f"/v1/crawl/definitions/{ref}/run",
+        json_body=_body(
+            {
+                "max_age": max_age,
+                "wait": True if wait else None,
+                "timeout": timeout,
+                "limit": limit,
+            }
+        ),
+        ok=frozenset({504}) if wait else frozenset(),
+        run_timeout_on_504=wait,
+    )
+
+
+def crawl_definition_data(ref: int | str, limit: int | None) -> Op:
+    return Op("GET", f"/v1/crawl/definitions/{ref}/data", params=_clean({"limit": limit}))
 
 
 # ---------------------------------------------------------------------------

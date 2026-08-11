@@ -9,6 +9,8 @@ import json
 import httpx
 import pytest
 
+from writ_agent._version import __version__
+
 from writ_agent import (
     AsyncWritAgent,
     Page,
@@ -39,7 +41,7 @@ async def test_headers_and_page_envelopes():
         monitors = await client.monitors.list()
 
     assert seen["auth"] == f"Bearer {TOKEN}"
-    assert seen["ua"] == "writ-sdk-python/0.1.0"
+    assert seen["ua"] == f"writ-sdk-python/{__version__}"
     assert isinstance(workflows, Page) and workflows.count == 1 and workflows.total is None
     assert runs.total == 9
     assert monitors.count == 1 and monitors.total is None

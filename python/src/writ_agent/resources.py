@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, Iterator
 
 from . import _ops as ops
+from ._watch import watch_changes
 from .pagination import Page
 from .types import (
     AgentHealth,
@@ -25,6 +26,9 @@ from .types import (
     ApiKey,
     Automation,
     CancelResult,
+    CrawlDataTable,
+    CrawlDefinition,
+    CrawlDefinitionList,
     CrawlJob,
     CrawlList,
     Dataset,
@@ -41,6 +45,8 @@ from .types import (
     RunStarted,
     SecretMeta,
     Selector,
+    SavedCrawlData,
+    SavedCrawlRun,
     StoredFile,
     VaultStatus,
     Workflow,
@@ -114,6 +120,7 @@ class Workflows(_Resource):
         files: dict[str, str] | None = None,
         wait: bool = False,
         timeout: int | None = None,
+        max_age: int | None = None,
     ) -> RunStarted | RunCompleted | dict[str, Any]:
         """Run the workflow.
 
@@ -131,13 +138,26 @@ class Workflows(_Resource):
         Prefer :meth:`run_and_wait` when you want live events, the enriched run feed item,
         or a deadline longer than the daemon's own ceiling.
 
+        ``max_age`` reuses a recent answer instead of running: if this workflow's
+        last successful run with the SAME inputs finished within that many seconds,
+        its data comes back immediately and nothing executes. The response carries
+        ``_cache.hit`` / ``_cache.age_seconds`` so you can always tell which you
+        got. Omit it (or pass 0) for today's behaviour — always run.
+
         ``dry_run=True`` is a validate-only path: the daemon answers 200 with a
         step-plan report and nothing executes. ``files`` maps declared upload
         slots to vault file ids (``{slot: file_id}``).
         """
         return self._c._call(
             ops.workflows_run(
-                workflow_id, inputs, persona_id, dry_run, files, wait=wait, timeout=timeout
+                workflow_id,
+                inputs,
+                persona_id,
+                dry_run,
+                files,
+                wait=wait,
+                timeout=timeout,
+                max_age=max_age,
             )
         )
 
@@ -271,9 +291,28 @@ class Monitors(_Resource):
         """The device check-capacity meter snapshot."""
         return self._c._call(ops.monitors_capacity())
 
-    def recent_changes(self, limit: int | None = None) -> Page[RecentChange]:
-        """Newest detected content changes across ALL monitors (``/v1/changes/recent``)."""
-        return self._c._call(ops.monitors_recent_changes({"limit": limit}))
+    def recent_changes(self, limit: int | None = None, **params: Any) -> Page[RecentChange]:
+        """Detected content changes across ALL monitors (``/v1/changes/recent``).
+
+        Newest-first by default. Pass ``since=<ISO-8601>`` (and ``since_id`` to
+        break ties) and the daemon switches to an oldest-first keyset walk
+        returning only what was detected after that point. Prefer that for
+        polling: newest-first plus a limit silently drops changes whenever more
+        than ``limit`` of them land between two polls. For a continuous feed use
+        :meth:`watch`.
+        """
+        return self._c._call(ops.monitors_recent_changes({"limit": limit, **params}))
+
+    def watch(self, **options: Any) -> Iterator[dict[str, Any]]:
+        """Stream detected changes across ALL monitors on the LOCAL daemon.
+
+        Identical semantics to ``client.cloud.monitors.watch()`` — same cursor,
+        same options, same delivery guarantees — so a program can move between
+        venues by changing which object it watches. See
+        :func:`writ_agent._watch.watch_changes` for why hand-rolled polling of
+        this feed loses changes.
+        """
+        return watch_changes(lambda params: self.recent_changes(**params), **options)
 
 
 class Selectors(_Resource):
@@ -644,6 +683,116 @@ class Crawl(_Resource):
         view plus ``cancel_requested_now`` — true iff this call flipped the crawl
         to ``stopping``, false if it was already terminal. Never a 409."""
         return self._c._call(ops.crawl_cancel(crawl_id))
+
+    # -- saved crawls (the callable crawl API) -------------------------------
+    #
+    # A crawl row is one RUN and its id dies with that run. A SAVED crawl owns the
+    # settings under a stable slug, so it can be re-run with exactly those
+    # settings — and, with `max_age`, answered from the data it already collected
+    # instead of crawling the site again.
+
+    def saved(self, limit: int | None = None) -> CrawlDefinitionList:
+        """Newest-first saved crawls → ``{"definitions": [...]}`` (NOT a Page)."""
+        return self._c._call(ops.crawl_definitions_list(limit))
+
+    def save(
+        self,
+        *,
+        name: str | None = None,
+        slug: str | None = None,
+        description: str | None = None,
+        default_max_age_seconds: int | None = None,
+        config: dict[str, Any] | None = None,
+        from_crawl_id: int | None = None,
+    ) -> CrawlDefinition:
+        """Save a crawl configuration so it becomes callable and re-runnable.
+
+        Pass EITHER ``config`` (a start-crawl body) OR ``from_crawl_id``. Prefer
+        ``from_crawl_id`` when capturing an existing crawl: its status view does
+        not echo every knob it ran with (politeness, shard sizing, path filters),
+        so a config rebuilt from that view would silently substitute defaults and
+        save a crawl that behaves differently.
+
+        ``default_max_age_seconds`` is the freshness applied when a caller omits
+        ``max_age``; leave it unset for "always re-crawl".
+        """
+        if config is None and from_crawl_id is None:
+            raise ValueError("save() needs either config= or from_crawl_id=")
+        return self._c._call(
+            ops.crawl_definition_create(
+                {
+                    "name": name,
+                    "slug": slug,
+                    "description": description,
+                    "default_max_age_seconds": default_max_age_seconds,
+                    "config": config,
+                    "from_crawl_id": from_crawl_id,
+                }
+            )
+        )
+
+    def saved_get(self, ref: int | str) -> CrawlDefinition:
+        """One saved crawl by id or slug (404 if missing)."""
+        return self._c._call(ops.crawl_definition_get(ref))
+
+    def saved_update(
+        self,
+        ref: int | str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        default_max_age_seconds: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> CrawlDefinition:
+        """Patch a saved crawl. Omitted fields are left untouched."""
+        return self._c._call(
+            ops.crawl_definition_update(
+                ref,
+                {
+                    "name": name,
+                    "description": description,
+                    "default_max_age_seconds": default_max_age_seconds,
+                    "config": config,
+                },
+            )
+        )
+
+    def saved_delete(self, ref: int | str) -> None:
+        """Delete a saved crawl. Its past runs and their collected data survive —
+        only the reusable configuration goes away."""
+        return self._c._call(ops.crawl_definition_delete(ref))
+
+    def run_saved(
+        self,
+        ref: int | str,
+        *,
+        max_age: int | None = None,
+        wait: bool = False,
+        timeout: int | None = None,
+        limit: int | None = None,
+    ) -> SavedCrawlRun:
+        """Run a saved crawl — reusing its data when ``max_age`` allows.
+
+        ``max_age`` is a freshness contract, not a cache flag: "data collected
+        within this many seconds is acceptable, otherwise go get it again". On a
+        hit you get the previous run's rows inline with ``_cache.hit`` true and
+        nothing is crawled or metered. ``max_age=0`` always re-crawls.
+
+        A cold call returns a dispatched crawl (``cached`` false, no ``data``) —
+        a whole-site crawl outlives an HTTP request, so poll ``status_url`` or use
+        ``wait=True``. With ``wait=True`` an overrun raises
+        :class:`WritRunTimeoutError` carrying the crawl id, so the work already
+        started stays collectable.
+        """
+        return self._c._call(ops.crawl_definition_run(ref, max_age, wait, timeout, limit))
+
+    def saved_data(self, ref: int | str, *, limit: int | None = None) -> SavedCrawlData:
+        """The rows a saved crawl already collected on its latest completed run.
+
+        A pure read at any age — never starts a crawl. Use :meth:`run_saved` with
+        ``max_age`` when you need a recency guarantee instead.
+        """
+        return self._c._call(ops.crawl_definition_data(ref, limit))
 
 
 class Datasets(_Resource):

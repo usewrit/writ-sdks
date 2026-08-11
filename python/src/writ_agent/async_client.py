@@ -12,6 +12,7 @@ from . import _ops as ops
 from . import discovery
 from .cloud import AsyncCloud
 from ._base import (
+    MAX_EVENT_RECONNECTS,
     SSE_READ_TIMEOUT,
     USER_AGENT,
     BaseClient,
@@ -19,6 +20,13 @@ from ._base import (
     connection_error,
     decode_response,
     request_kwargs,
+)
+from ._retry import (
+    DEFAULT_RETRY,
+    RetryPolicy,
+    backoff_seconds,
+    retry_after_seconds,
+    should_retry_status,
 )
 from ._sse import SSEDecoder
 from .errors import (
@@ -69,6 +77,7 @@ class AsyncWritAgent(BaseClient):
         api_key: str | None = None,
         cloud_url: str | None = None,
         client_id: str | None = None,
+        retry: RetryPolicy | None = None,
     ) -> None:
         super().__init__(
             base_url,
@@ -78,10 +87,13 @@ class AsyncWritAgent(BaseClient):
             ca_file=ca_file,
             transport=transport,
         )
+        # Unsafe methods are forced off: the local daemon has no idempotency
+        # lane, so a repeated POST creates a second resource.
+        self._retry = (retry or DEFAULT_RETRY).with_unsafe(False)
         # Tiered Writ Cloud surface (scrape/map/crawl) — its own base URL + credential.
         self.cloud = AsyncCloud(
             api_key=api_key, cloud_url=cloud_url, client_id=client_id,
-            timeout=timeout, verify=self._verify,
+            timeout=timeout, verify=self._verify, retry=retry,
         )
         self._http: httpx.AsyncClient | None = None
         self._ensure_lock = asyncio.Lock()
@@ -135,42 +147,104 @@ class AsyncWritAgent(BaseClient):
     # -- transport -----------------------------------------------------------
 
     async def _call(self, op: ops.Op) -> Any:
-        http = await self._ensure()
-        try:
-            response = await http.request(op.method, op.path, **request_kwargs(op))
-        except httpx.TransportError as exc:
-            raise connection_error(self._base_url, exc) from exc
+        response = await self._request_with_retry(op)
         return decode_response(op, check_response(op, response))
+
+    async def _request_with_retry(self, op: ops.Op) -> httpx.Response:
+        """Issue the request, retrying transient failures per ``self._retry``.
+
+        Unsafe methods are NOT retried here: this transport talks to the local
+        daemon, which has no ``Idempotency-Key`` lane to make a repeated POST
+        safe. See ``_retry.RetryPolicy``.
+        """
+        http = await self._ensure()
+        policy = self._retry
+        attempts = policy.attempts_for(op.method)
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            response: httpx.Response | None = None
+            try:
+                response = await http.request(op.method, op.path, **request_kwargs(op))
+                if not should_retry_status(response.status_code):
+                    return response
+            except httpx.TransportError as exc:
+                last_exc = exc
+
+            if attempt >= attempts:
+                if response is not None:
+                    return response
+                assert last_exc is not None
+                raise connection_error(self._base_url, last_exc) from last_exc
+
+            wait = backoff_seconds(policy, attempt)
+            requested = retry_after_seconds(response)
+            if requested is not None:
+                if requested > policy.max_retry_after and response is not None:
+                    # The server says this will not clear any time soon. Hand the
+                    # caller the real answer now — it carries the reset time.
+                    return response
+                wait = requested
+            await asyncio.sleep(wait)
+
+        raise AssertionError("unreachable")  # pragma: no cover
 
     # -- SSE (DESIGN §8) -----------------------------------------------------
 
     async def _run_events(
-        self, run_id: int, _deadline: float | None = None
+        self,
+        run_id: int,
+        _deadline: float | None = None,
+        max_reconnects: int = MAX_EVENT_RECONNECTS,
     ) -> AsyncIterator[RunEvent]:
+        """Async twin of ``WritAgent._run_events`` — same reconnect + de-dupe
+        contract; see that docstring for why replayed frames are suppressed by
+        sequence rather than by a Last-Event-ID the daemon does not serve."""
         http = await self._ensure()
         path = ops.runs_events_path(run_id)
         timeout = httpx.Timeout(
             self._timeout, read=None if _deadline is None else SSE_READ_TIMEOUT
         )
-        try:
-            async with http.stream("GET", path, timeout=timeout) as response:
-                if response.status_code >= 400:
-                    await response.aread()
-                    raise api_error_from_response(response)
-                decoder = SSEDecoder()
-                async for line in response.aiter_lines():
-                    if _deadline is not None and time.monotonic() > _deadline:
-                        raise WritTimeoutError(
-                            f"run {run_id} event stream exceeded the wait deadline"
-                        )
-                    event = decoder.feed(line)
-                    if event is None:
-                        continue
-                    yield event  # type: ignore[misc]
-                    if event.get("event") in TERMINAL_EVENTS:
-                        return
-        except httpx.TransportError as exc:
-            raise connection_error(self._base_url, exc) from exc
+        delivered = 0
+        attempts = 0
+
+        while True:
+            seen = 0
+            terminal = False
+            drop_exc: Exception | None = None
+            try:
+                async with http.stream("GET", path, timeout=timeout) as response:
+                    if response.status_code >= 400:
+                        await response.aread()
+                        raise api_error_from_response(response)
+                    decoder = SSEDecoder()
+                    async for line in response.aiter_lines():
+                        if _deadline is not None and time.monotonic() > _deadline:
+                            raise WritTimeoutError(
+                                f"run {run_id} event stream exceeded the wait deadline"
+                            )
+                        event = decoder.feed(line)
+                        if event is None:
+                            continue
+                        seen += 1
+                        if seen <= delivered:
+                            continue  # replayed frame from before the drop
+                        delivered = seen
+                        yield event  # type: ignore[misc]
+                        if event.get("event") in TERMINAL_EVENTS:
+                            terminal = True
+                            break
+            except httpx.TransportError as exc:
+                drop_exc = connection_error(self._base_url, exc)
+
+            if terminal:
+                return
+            attempts += 1
+            if attempts > max_reconnects:
+                if drop_exc is not None:
+                    raise drop_exc
+                return
+            await asyncio.sleep(backoff_seconds(DEFAULT_RETRY, attempts))
 
     # -- run_and_wait (DESIGN §8) ---------------------------------------------
 
@@ -195,7 +269,11 @@ class AsyncWritAgent(BaseClient):
 
         terminal_seen = False
         try:
-            async for event in self._run_events(run_id, _deadline=deadline):
+            # max_reconnects=0: the polling fallback below is strictly better
+            # than reconnecting, so a dropped stream should reach it at once.
+            async for event in self._run_events(
+                run_id, _deadline=deadline, max_reconnects=0
+            ):
                 if event.get("event") in TERMINAL_EVENTS:
                     terminal_seen = True
                     break

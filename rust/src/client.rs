@@ -10,6 +10,8 @@ use reqwest::{Method, Response};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use tokio::time::sleep;
+
 use crate::discovery::{env_var, runtime_candidates};
 use crate::error::{api_error, Result, WritError};
 use crate::models::WsTicket;
@@ -17,6 +19,7 @@ use crate::resources::{
     Agent, Automations, Crawl, Data, Datasets, Extractors, Files, Keys, Monitors, Personas, Runs,
     Secrets, Selectors, Vault, Workflows,
 };
+use crate::retry::{retry_after, should_retry_status, RetryPolicy};
 
 /// `User-Agent` sent on every request: `writ-sdk-rust/<version>`.
 pub(crate) const USER_AGENT: &str = concat!("writ-sdk-rust/", env!("CARGO_PKG_VERSION"));
@@ -47,6 +50,14 @@ pub struct WritAgent {
 pub(crate) struct Inner {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: String,
+    /// Transient-failure policy. Unsafe methods are never retried here: the local
+    /// daemon has no `Idempotency-Key` lane, so a repeated POST is a second
+    /// resource, not a replayed answer.
+    pub(crate) retry: RetryPolicy,
+    /// Applied per request rather than only as a client default header, so a
+    /// caller-supplied [`reqwest::Client`] is authenticated too. Without this a
+    /// custom client would send every request unauthenticated and 401.
+    pub(crate) auth: Option<HeaderValue>,
 }
 
 /// Configuration builder. `build()` performs **no network I/O** (and no filesystem
@@ -59,6 +70,8 @@ pub struct WritAgentBuilder {
     token: Option<String>,
     timeout: Option<Duration>,
     ca_pem_file: Option<PathBuf>,
+    retry: Option<RetryPolicy>,
+    http_client: Option<reqwest::Client>,
 }
 
 impl WritAgentBuilder {
@@ -90,8 +103,36 @@ impl WritAgentBuilder {
         self
     }
 
-    /// The reqwest client for `timeout`, honoring the optional CA file.
-    fn http_client(&self, timeout: Duration, token: Option<&str>) -> Result<reqwest::Client> {
+    /// Override the transient-failure retry policy. [`RetryPolicy::off`] disables
+    /// retrying entirely.
+    ///
+    /// Unsafe methods are never retried against the local daemon regardless of
+    /// this setting — it has no `Idempotency-Key` lane, so a repeated POST is a
+    /// second resource.
+    pub fn retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = Some(policy);
+        self
+    }
+
+    /// Supply your own [`reqwest::Client`].
+    ///
+    /// This is the extension point for anything the builder does not model
+    /// directly: a proxy, a connection-pool limit, custom TLS, a tracing
+    /// middleware layer, or a mock transport in tests. When set, `timeout` and
+    /// `ca_pem_file` are the supplied client's business — the SDK only adds the
+    /// per-request `Authorization` header it always adds.
+    pub fn http_client(mut self, client: reqwest::Client) -> Self {
+        self.http_client = Some(client);
+        self
+    }
+
+    /// The reqwest client for `timeout`, honoring the optional CA file — or the
+    /// caller's own client, when one was supplied via
+    /// [`WritAgentBuilder::http_client`].
+    fn build_http(&self, timeout: Duration, token: Option<&str>) -> Result<reqwest::Client> {
+        if let Some(client) = &self.http_client {
+            return Ok(client.clone());
+        }
         let mut builder = reqwest::Client::builder()
             .timeout(timeout)
             .user_agent(USER_AGENT);
@@ -127,11 +168,18 @@ impl WritAgentBuilder {
     }
 
     fn assemble(&self, base_url: &str, token: &str) -> Result<WritAgent> {
-        let http = self.http_client(self.timeout.unwrap_or(DEFAULT_TIMEOUT), Some(token))?;
+        let http = self.build_http(self.timeout.unwrap_or(DEFAULT_TIMEOUT), Some(token))?;
+        let mut auth = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| {
+            WritError::Discovery("token contains characters invalid in an HTTP header".into())
+        })?;
+        auth.set_sensitive(true);
         Ok(WritAgent {
             inner: Arc::new(Inner {
                 http,
                 base_url: base_url.trim_end_matches('/').to_string(),
+                // Unsafe methods forced off — see the field docs.
+                retry: self.retry.unwrap_or_default().with_unsafe(false),
+                auth: Some(auth),
             }),
         })
     }
@@ -173,7 +221,7 @@ impl WritAgentBuilder {
             ));
         }
 
-        let probe = self.http_client(PROBE_TIMEOUT, None)?;
+        let probe = self.build_http(PROBE_TIMEOUT, None)?;
         let mut tried: Vec<String> = Vec::new();
         for candidate in candidates {
             let url = url_override
@@ -314,9 +362,72 @@ impl Inner {
         format!("{}{}", self.base_url, path)
     }
 
-    /// Send and surface non-2xx (outside `extra_ok`) as [`WritError::Api`].
+    /// Send (retrying transient failures) and surface non-2xx outside `extra_ok`
+    /// as [`WritError::Api`].
+    ///
+    /// Retrying needs a fresh request per attempt, which `try_clone` provides for
+    /// every body this SDK sends. A streaming body cannot be cloned; that request
+    /// is simply attempted once rather than silently sending a truncated retry.
     async fn execute(&self, rb: reqwest::RequestBuilder, extra_ok: &[u16]) -> Result<Response> {
-        let resp = rb.send().await.map_err(WritError::from)?;
+        // Applied here, at the single choke point, so a caller-supplied client
+        // (which carries none of the SDK's default headers) is still
+        // authenticated and still identifies itself.
+        let rb = match &self.auth {
+            Some(auth) => rb
+                .header(AUTHORIZATION, auth.clone())
+                .header(reqwest::header::USER_AGENT, USER_AGENT),
+            None => rb,
+        };
+        let policy = self.retry;
+        let method = rb
+            .try_clone()
+            .and_then(|c| c.build().ok())
+            .map(|r| r.method().clone())
+            .unwrap_or(Method::GET);
+        let attempts = policy.attempts_for(&method);
+
+        let mut pending = Some(rb);
+        let mut attempt = 1u32;
+        let resp = loop {
+            let current = pending
+                .take()
+                .ok_or_else(|| WritError::Connection("retry lost the request".into()))?;
+            // Keep a clone for the next attempt only while one is still allowed.
+            let next = if attempt < attempts {
+                current.try_clone()
+            } else {
+                None
+            };
+
+            match current.send().await {
+                Ok(resp) => {
+                    if !should_retry_status(resp.status()) {
+                        break resp;
+                    }
+                    let Some(next_rb) = next else { break resp };
+                    let mut wait = policy.backoff(attempt);
+                    if let Some(requested) = retry_after(&resp) {
+                        if requested > policy.max_retry_after {
+                            // The server says this will not clear any time soon.
+                            // Hand back the real answer, which carries the reset.
+                            break resp;
+                        }
+                        wait = requested;
+                    }
+                    sleep(wait).await;
+                    pending = Some(next_rb);
+                }
+                Err(err) => {
+                    let Some(next_rb) = next else {
+                        return Err(WritError::from(err));
+                    };
+                    sleep(policy.backoff(attempt)).await;
+                    pending = Some(next_rb);
+                }
+            }
+            attempt += 1;
+        };
+
         let status = resp.status();
         if status.is_success() || extra_ok.contains(&status.as_u16()) {
             return Ok(resp);
@@ -371,6 +482,26 @@ impl Inner {
         Self::decode(self.execute(rb, extra_ok).await?).await
     }
 
+    /// `method path?query` where the daemon answers `204 No Content`.
+    ///
+    /// Separate from [`Inner::send_json`] because that decodes the body with
+    /// `resp.json()`, which FAILS on an empty one — a 204 would surface as a bogus
+    /// "decoding response body" error even though the call succeeded.
+    pub(crate) async fn send_no_content(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> Result<()> {
+        let mut rb = self.http.request(method, self.url(path)).query(query);
+        if let Some(body) = body {
+            rb = rb.json(body);
+        }
+        self.execute(rb, &[]).await?;
+        Ok(())
+    }
+
     /// `GET path?query` → raw text (CSV lane).
     pub(crate) async fn get_text(&self, path: &str, query: &[(&str, &str)]) -> Result<String> {
         let rb = self.http.get(self.url(path)).query(query);
@@ -395,6 +526,20 @@ impl Inner {
             .map_err(|e| WritError::Connection(format!("reading response body: {e}")))
     }
 
+    /// An OWNED handle that can re-open one streaming endpoint.
+    ///
+    /// A `'static` SSE stream cannot borrow `Inner`, so reconnecting after a
+    /// mid-stream drop needs its own copy of what it takes to issue the request.
+    /// `reqwest::Client` is an `Arc` internally, so this clone is cheap.
+    pub(crate) fn stream_opener(&self, path: &str, timeout: Duration) -> StreamOpener {
+        StreamOpener {
+            http: self.http.clone(),
+            url: self.url(path),
+            auth: self.auth.clone(),
+            timeout,
+        }
+    }
+
     /// `GET path` as a streaming response (SSE) with a per-request timeout
     /// override — the client-wide 30 s default would sever a long stream.
     pub(crate) async fn get_stream(&self, path: &str, timeout: Duration) -> Result<Response> {
@@ -414,5 +559,37 @@ impl Inner {
     ) -> Result<T> {
         let rb = self.http.post(self.url(path)).multipart(form);
         Self::decode(self.execute(rb, &[]).await?).await
+    }
+}
+
+/// Re-opens one streaming endpoint. See [`Inner::stream_opener`].
+#[derive(Debug, Clone)]
+pub(crate) struct StreamOpener {
+    http: reqwest::Client,
+    url: String,
+    auth: Option<HeaderValue>,
+    timeout: Duration,
+}
+
+impl StreamOpener {
+    pub(crate) async fn open(&self) -> Result<Response> {
+        let mut rb = self
+            .http
+            .get(&self.url)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .timeout(self.timeout);
+        if let Some(auth) = &self.auth {
+            rb = rb
+                .header(AUTHORIZATION, auth.clone())
+                .header(reqwest::header::USER_AGENT, USER_AGENT);
+        }
+        let resp = rb.send().await.map_err(WritError::from)?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        let reason = status.canonical_reason().unwrap_or("error").to_string();
+        let text = resp.text().await.unwrap_or_default();
+        Err(api_error(status.as_u16(), &reason, &text))
     }
 }

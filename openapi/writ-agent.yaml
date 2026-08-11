@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Writ Agent API
-  version: 1.0.0
+  version: 0.1.0
   license:
     name: MIT
     identifier: MIT
@@ -2693,6 +2693,193 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/crawl/definitions:
+    get:
+      operationId: listCrawlDefinitions
+      tags: [crawl]
+      summary: List saved crawls
+      description: >-
+        Newest-first saved crawls. A saved crawl is a stored crawl configuration with a
+        stable slug: a crawl row is one RUN whose id dies with that run, so a definition
+        is what makes a crawl callable and re-runnable. Envelope is
+        `{definitions: [...]}`, not a page.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      responses:
+        '200':
+          description: The saved crawls.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlDefinitionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: saveCrawlDefinition
+      tags: [crawl]
+      summary: Save a crawl configuration
+      description: >-
+        Supply EITHER `config` (a start-crawl body) OR `from_crawl_id`. Prefer
+        `from_crawl_id` when capturing an existing crawl: a crawl's status view does not
+        echo every knob it ran with (politeness, shard sizing, path filters), so a config
+        rebuilt by a client would silently substitute defaults and save a crawl that
+        behaves differently from the one you pointed at.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveCrawlBody'
+      responses:
+        '201':
+          description: The saved crawl.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlDefinition'
+        '400':
+          description: Neither `config` nor `from_crawl_id` was supplied.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/crawl/definitions/{ref}:
+    parameters:
+      - $ref: '#/components/parameters/CrawlDefinitionRef'
+    get:
+      operationId: getCrawlDefinition
+      tags: [crawl]
+      summary: Get one saved crawl
+      responses:
+        '200':
+          description: The saved crawl.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlDefinition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateCrawlDefinition
+      tags: [crawl]
+      summary: Update a saved crawl
+      description: Sparse update — omitted fields stay untouched.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveCrawlBody'
+      responses:
+        '200':
+          description: The updated saved crawl.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlDefinition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteCrawlDefinition
+      tags: [crawl]
+      summary: Delete a saved crawl
+      description: >-
+        Removes the reusable configuration only. The runs it launched and the data they
+        collected survive — they simply stop pointing at a definition.
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/crawl/definitions/{ref}/run:
+    post:
+      operationId: runCrawlDefinition
+      tags: [crawl]
+      summary: Run a saved crawl (with optional freshness reuse)
+      description: >-
+        Runs the saved settings. `max_age` is a freshness CONTRACT, not a cache flag:
+        "data collected within this many seconds is acceptable, otherwise go get it
+        again". On a hit the last completed run's rows are returned inline with
+        `cached: true` and nothing is crawled or metered; `max_age: 0` (or
+        `Cache-Control: no-cache`) always re-crawls.
+
+
+        Only a `completed` run with at least one fetched page is reusable — a crawl that
+        converged having fetched nothing (the shape a fully-blocked host produces) must
+        not pin an empty answer behind a long window.
+
+
+        A cold call answers **202** with a crawl id and `status_url`, because a whole-site
+        crawl outlives an HTTP request. Pass `wait: true` to block instead; an overrun
+        answers **504 carrying the same collectable handle**, never a dead end.
+      parameters:
+        - $ref: '#/components/parameters/CrawlDefinitionRef'
+        - name: max_age
+          in: query
+          description: "Alternative spelling of the body field (also accepts `Cache-Control: max-age=N`)."
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunSavedCrawlBody'
+      responses:
+        '200':
+          description: A freshness hit — collected data, nothing crawled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedCrawlRun'
+        '202':
+          description: A crawl was dispatched; poll `status_url`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedCrawlRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '504':
+          description: >-
+            `wait: true` outlived its budget. The crawl is STILL RUNNING; the body carries
+            `crawl_id` and `status_url` so it stays collectable. Do not retry — that would
+            start a second crawl.
+
+  /v1/crawl/definitions/{ref}/data:
+    get:
+      operationId: getCrawlDefinitionData
+      tags: [crawl]
+      summary: Read what a saved crawl already collected
+      description: >-
+        The rows from the saved crawl's most recent completed run. A pure read at any age
+        — never dispatches a crawl. Use the run endpoint with `max_age` when you need a
+        recency guarantee instead.
+      parameters:
+        - $ref: '#/components/parameters/CrawlDefinitionRef'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      responses:
+        '200':
+          description: The collected rows (or nulls when it has never completed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedCrawlData'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # ----------------------------------------------------------------- cloud ---
   # These paths target the CLOUD server, not the daemon — note the per-path `servers` override
   # and the two credential tiers (Bearer key → /api/crawl/*, else X-Writ-Client-Id → /v1/keyless/*).
@@ -2818,6 +3005,424 @@ paths:
                 $ref: '#/components/schemas/KeylessQuota'
         '400':
           description: Missing `X-Writ-Client-Id`.
+
+
+  # --- cloud monitors + cloud crawl -------------------------------------------
+  # The SAME capabilities as the daemon's /v1/monitors and /v1/crawl, over a wt_
+  # API key, so an account can start in the cloud without installing anything.
+  # Two things differ from the daemon and are NOT typos:
+  #   * the resource is called `targets` on the wire (the product calls it a monitor)
+  #   * requests are snake_case but responses are camelCase — the cloud serialises
+  #     with its own field aliases
+  # Every operation here is gated by the api_scopes route map: monitors:* for
+  # /api/targets, crawl:* for /api/crawl.
+  /api/targets:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    get:
+      operationId: cloudListMonitors
+      tags: [cloud]
+      summary: List cloud monitors
+      description: Every monitor on the account, newest first. Bare-array envelope. Scope `monitors:read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: enabled_only
+          in: query
+          schema: { type: boolean, default: false }
+        - name: check_type
+          in: query
+          schema: { type: string, enum: [content, uptime] }
+        - name: limit
+          in: query
+          description: 1-1000, newest first. Omit for all of them.
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: The account's monitors.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CloudMonitor' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: cloudCreateMonitor
+      tags: [cloud]
+      summary: Create a cloud monitor
+      description: >-
+        Create a monitor. Scope `monitors:write`. A `check_period_ms` below the plan's minimum check
+        interval is REJECTED with `402 interval_too_short` naming the floor — it is never silently
+        clamped, so a monitor never runs slower than requested without saying so. JS-rendered checks
+        (`requires_playwright`) have their own, longer floor. The seed URL is fetched once to
+        establish a baseline, so a URL that does not answer 200 is rejected.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloudMonitorCreate' }
+      responses:
+        '201':
+          description: The created monitor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudMonitor' }
+        '400':
+          description: The URL is not allowed, or could not be fetched for a baseline.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PlanLimit'
+
+  /api/targets/{target_id}:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    parameters:
+      - name: target_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: cloudGetMonitor
+      tags: [cloud]
+      summary: Get a cloud monitor
+      description: One monitor, enriched with its live check state. Scope `monitors:read`.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The monitor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudMonitor' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: cloudUpdateMonitor
+      tags: [cloud]
+      summary: Update a cloud monitor
+      description: Partial update — send only the fields that change. Scope `monitors:write`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloudMonitorCreate' }
+      responses:
+        '200':
+          description: The updated monitor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudMonitor' }
+        '402':
+          $ref: '#/components/responses/PlanLimit'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: cloudDeleteMonitor
+      tags: [cloud]
+      summary: Delete a cloud monitor
+      description: >-
+        Delete the monitor with its selectors, trigger rules and notification history.
+        Scope `monitors:delete`.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Deleted. No body.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/targets/{target_id}/toggle:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    parameters:
+      - name: target_id
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      operationId: cloudToggleMonitor
+      tags: [cloud]
+      summary: Pause or resume a cloud monitor
+      description: Enable or disable without deleting. Scope `monitors:write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: enabled
+          in: query
+          required: true
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: The monitor in its new state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudMonitor' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/targets/{target_id}/run:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    parameters:
+      - name: target_id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      operationId: cloudRunMonitor
+      tags: [cloud]
+      summary: Check a cloud monitor now
+      description: >-
+        Trigger an immediate, out-of-schedule check. Scope `monitors:execute`. `ok` is false with a
+        `detail` when no recorder is assigned yet — the check still happens on its next scheduled cycle.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Dispatch outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudMonitorRunResult' }
+        '409':
+          description: The monitor is paused — resume it before checking now.
+        '503':
+          description: The recorder for this monitor is offline.
+
+  /api/targets/{target_id}/changes:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    parameters:
+      - name: target_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: cloudMonitorChanges
+      tags: [cloud]
+      summary: A cloud monitor's change history
+      description: Detected changes for this monitor, newest first. Scope `monitors:read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: Detected changes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CloudMonitorChange' }
+
+  /api/targets/changes/recent:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    get:
+      operationId: cloudRecentChanges
+      tags: [cloud]
+      summary: Recent changes across all cloud monitors
+      description: The newest detected changes on the whole account. Scope `monitors:read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Detected changes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CloudMonitorChange' }
+
+  /api/crawl:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    post:
+      operationId: cloudStartCrawl
+      tags: [cloud]
+      summary: Start a cloud crawl
+      description: >-
+        Start a whole-site Dragnet crawl on Writ Cloud, billed per page against the plan allotment.
+        Scope `crawl:execute`. Metered only — there is no keyless whole-site crawl. Results land as a
+        workflow dataset addressed by `data_workflow_id`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CrawlStartRequest' }
+      responses:
+        '200':
+          description: The started crawl.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudCrawlJob' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PlanLimit'
+
+  /api/crawl/{crawl_id}:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    parameters:
+      - name: crawl_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: cloudCrawlStatus
+      tags: [cloud]
+      summary: Poll a cloud crawl
+      description: Status snapshot — `pages_done`/`pages_discovered` climb as shards land. Scope `crawl:read`.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The crawl's current state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudCrawlJob' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/website-to-api:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    post:
+      operationId: cloudWebsiteToApi
+      tags: [cloud]
+      summary: Turn a website into a callable API
+      description: >-
+        The REST twin of the MCP tool `writ_website_to_api`, and ASYNCHRONOUS on purpose: the tool
+        works because the caller is a MODEL that drives the browser turn by turn, and a program
+        cannot, so Writ's own agent loop drives and this call hands back a build id to poll.
+
+
+        Answers one of THREE ways, cheapest first, and the first two spend NO AI:
+        `existing_workflows` (your library already covers this goal), `marketplace_candidates`
+        (a ready-made listing does), or a queued build. Pass `skip_existing` / `skip_marketplace`
+        to go straight to a build.
+
+
+        Scope `workflows:write` — a build AUTHORS a workflow. It also spends AI credits, so the key
+        must have AI enabled; a plan ceiling comes back as a `PlanLimitError`, never as a credits error.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebsiteToApiRequest' }
+      responses:
+        '202':
+          description: A build was queued. Poll it with the `build_id`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudBuild' }
+        '200':
+          description: >-
+            The ladder answered without building — `status` is `existing_workflows` or
+            `marketplace_candidates`, and no AI was spent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudBuild' }
+        '400':
+          description: The URL is not allowed by the SSRF/domain policy.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PlanLimit'
+        '403':
+          description: The API key is not permitted to use AI features.
+
+  /api/v1/website-to-api/{build_id}:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    parameters:
+      - name: build_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: cloudWebsiteToApiStatus
+      tags: [cloud]
+      summary: Poll a website-to-API build
+      description: >-
+        Terminal states are `succeeded`, `failed` and `cancelled`. On `succeeded` the body carries
+        `workflow_id` — the workflow the build saved. Scope `workflows:read`.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The build's current state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudBuild' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/keyless/crawl:
+    servers:
+      - url: https://api.usewrit.app
+        description: Writ Cloud. Override with WRIT_CLOUD_URL.
+    post:
+      operationId: cloudKeylessCrawl
+      tags: [cloud]
+      summary: Crawl a few pages (keyless)
+      description: >-
+        A bounded crawl with NO account. It discovers links the way `/v1/keyless/map` does and
+        scrapes the top few IN PROCESS — no fleet dispatch, no persona, no residential egress,
+        same-domain only, one level deep.
+
+
+        This is NOT a small version of `POST /api/crawl`: that one queues a Dragnet job you poll,
+        this returns the pages inline. Every page also spends the caller's daily page allowance, so
+        the daily cap — not the per-request cap — is the real ceiling. The response states both.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KeylessCrawlRequest' }
+      responses:
+        '200':
+          description: The pages it fetched, with the limits that applied.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KeylessCrawlResult' }
+        '422':
+          description: The seed page could not be fetched (bot-blocked, login-walled, or down).
+        '429':
+          description: The daily keyless allowance (per device and per IP) is spent.
+
 
   # ------------------------------------------------------------------ keys ---
   /v1/keys:
@@ -3066,6 +3671,13 @@ components:
       schema:
         type: integer
         format: int64
+    CrawlDefinitionRef:
+      name: ref
+      in: path
+      required: true
+      description: A saved crawl's numeric id or its slug.
+      schema:
+        type: string
     DatasetId:
       name: id
       in: path
@@ -3202,6 +3814,16 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    PlanLimit:
+      description: >-
+        A PLAN CEILING was hit (services.plan_enforcer) — NOT a wallet balance. Topping up credits
+        does not clear it; a longer interval, fewer monitors or a higher plan does. The body names
+        the ceiling in `code` and reports it numerically in `limit`, which is how a client tells this
+        apart from a credits 402 (that one carries no `limit`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PlanLimitError'
     BadRequest:
       description: >-
         Invalid input. Domain validation errors use the JSON Error shape; axum
@@ -3781,13 +4403,45 @@ components:
           type: boolean
           const: true
         data:
-          description: The run's result payload, present when it produced one.
+          description: >-
+            The run's result payload, present when it produced one. A run whose recipe has
+            `wait_for_download` steps also carries `output_files` here (see `OutputFile`) —
+            the vault handles of what the browser downloaded.
         error:
           type: string
           description: Why the run failed. Present for non-success terminal states.
         duration_ms:
           type: integer
           format: int64
+
+    OutputFile:
+      type: object
+      description: >-
+        One file a run CAPTURED. A `wait_for_download` step stores what the browser
+        downloaded into the vault and reports it under `result_data.output_files`. The
+        bytes are read back through `GET /v1/files/{id}/content` like any other handle —
+        nothing about a captured file is special once it lands.
+      required: [file_id, filename, size, content_type]
+      properties:
+        file_id:
+          type: string
+          description: Vault handle (`file_<hex>`), readable via the files API.
+        filename:
+          type: string
+          description: >-
+            The download's own name, as the site served it. Recorded steps also keep the
+            name seen while recording, but replay always prefers the LIVE one — a
+            timestamped or server-slugged filename must not fail the run.
+        size:
+          type: integer
+          format: int64
+        content_type:
+          type: string
+        output_key:
+          type: string
+          description: >-
+            The step's `output_key`, when it named the capture so later steps (or a later
+            workflow) can reference the file. Absent when the step did not name it.
 
     RunStillRunning:
       type: object
@@ -6130,6 +6784,258 @@ components:
             {preset, include_comments, exclude_selectors, include_selectors, keep}. Omit for
             default extraction. Forwarded to the cloud when linked; honored locally otherwise.
 
+    WebsiteToApiRequest:
+      type: object
+      description: Same inputs as the MCP tool, so the two front doors cannot drift.
+      required: [url, goal]
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          description: Site to start on. Screened against the SSRF/domain policy before any browser opens.
+        goal:
+          type: string
+          maxLength: 5000
+          description: What the API should return or do, in plain language.
+        persona_id:
+          type: integer
+          description: Saved identity to sign in with, for sites behind a login.
+        max_steps: { type: integer, minimum: 1, maximum: 120, default: 40 }
+        save_as: { type: string, maxLength: 255 }
+        skip_existing:
+          type: boolean
+          default: false
+          description: Skip proposing your own matching workflows (replaying one is instant and free).
+        skip_marketplace:
+          type: boolean
+          default: false
+          description: Skip proposing ready-made marketplace listings.
+
+    CloudBuild:
+      type: object
+      description: >-
+        A build, or the ladder answer that made one unnecessary. `build_id` is present only when a
+        build was actually queued — branch on `status` first.
+      properties:
+        build_id: { type: integer }
+        status:
+          type: string
+          enum: [queued, building, succeeded, failed, cancelled, existing_workflows, marketplace_candidates]
+        url: { type: string }
+        goal: { type: string }
+        workflow_id:
+          type: integer
+          nullable: true
+          description: Present once the agent saves — this is what the build was for.
+        error: { type: string, nullable: true }
+        next: { type: string }
+        message: { type: string }
+        created_at: { type: string, nullable: true }
+        completed_at: { type: string, nullable: true }
+        workflows:
+          type: array
+          description: Ladder answer only — your own workflows that already cover the goal.
+          items: { type: object }
+        candidates:
+          type: array
+          description: Ladder answer only — ready-made listings that cover the goal.
+          items: { type: object }
+
+    KeylessCrawlRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, description: Seed URL to crawl. }
+        search: { type: string, description: Rank discovered URLs by relevance to this. }
+        limit:
+          type: integer
+          minimum: 1
+          description: Pages to fetch. The server caps it regardless — see `limits.page_cap`.
+        turnstile_token: { type: string }
+
+    KeylessCrawlResult:
+      type: object
+      description: >-
+        A bounded keyless crawl. Deliberately NOT a CrawlJob — that is a fleet job you poll, this
+        returns the pages inline.
+      properties:
+        verb: { type: string, enum: [crawl] }
+        url: { type: string }
+        pages:
+          type: array
+          items:
+            type: object
+            properties:
+              url: { type: string }
+              title: { type: string, nullable: true }
+              markdown: { type: string }
+        counts:
+          type: object
+          properties:
+            pages: { type: integer }
+            requested: { type: integer }
+        tier: { type: string, enum: [keyless] }
+        limits:
+          type: object
+          description: The ceilings that applied, stated so a caller need not discover them by hitting them.
+          properties:
+            page_cap: { type: integer }
+            max_depth: { type: integer }
+            same_domain: { type: boolean }
+            note: { type: string }
+        quota: { $ref: '#/components/schemas/KeylessQuota' }
+        upgrade_url: { type: string }
+
+    CloudMonitor:
+      type: object
+      description: >-
+        A monitor as WRIT CLOUD serialises it. NOTE THE CASING: the cloud answers camelCase
+        (`checkPeriodMs`) where the daemon's `Monitor` answers snake_case (`check_period_ms`). They
+        are two independently versioned services, not one service behind two hostnames, so the SDKs
+        model them as separate types rather than inventing a third shape.
+      properties:
+        id: { type: integer }
+        url: { type: string }
+        checkType: { type: string, enum: [content, uptime] }
+        selector: { type: string, nullable: true }
+        ignoreRegex: { type: string, nullable: true }
+        checkPeriodMs: { type: integer, nullable: true }
+        scheduleKind: { type: string, nullable: true, enum: [interval, daily, weekly] }
+        scheduleTime: { type: string, nullable: true }
+        scheduleDays:
+          type: array
+          nullable: true
+          items: { type: integer }
+        scheduleTz: { type: string, nullable: true }
+        enabled: { type: boolean }
+        expectedStatusCode: { type: integer, nullable: true }
+        timeoutMs: { type: integer, nullable: true }
+        maxResponseTimeMs: { type: integer, nullable: true }
+        checkSsl: { type: boolean, nullable: true }
+        requiresPlaywright: { type: boolean }
+        preferredRegion: { type: string, nullable: true }
+        useResidential: { type: boolean, nullable: true }
+        residentialCountry: { type: string, nullable: true }
+        createdAt: { type: string }
+        updatedAt: { type: string, nullable: true }
+        lastCheckedAt: { type: string, nullable: true }
+        changesCount: { type: integer }
+        state:
+          type: string
+          nullable: true
+          description: Live health from the monitoring state.
+          enum: [up, down, ok, stale, never]
+        statusCode: { type: integer, nullable: true }
+        lastChangeAt: { type: string, nullable: true }
+
+    CloudMonitorCreate:
+      type: object
+      description: >-
+        Create/update body for a cloud monitor. snake_case ON PURPOSE — the cloud ACCEPTS snake_case
+        and ANSWERS camelCase (`CloudMonitor`). Every field except `url` is optional; a PATCH sends
+        only what changes.
+      required: [url]
+      properties:
+        url: { type: string, maxLength: 2048 }
+        check_type:
+          type: string
+          enum: [content, uptime]
+          default: content
+          description: '`content` watches the page or a selector; `uptime` watches availability.'
+        selector:
+          type: string
+          maxLength: 512
+          description: CSS selector to extract and compare. Omit to watch the whole page.
+        ignore_regex: { type: string }
+        check_period_ms:
+          type: integer
+          description: >-
+            How often to check. BELOW the plan minimum this is REJECTED with `402
+            interval_too_short` naming the floor — never silently clamped.
+        schedule_kind: { type: string, enum: [interval, daily, weekly] }
+        schedule_time: { type: string, description: "Wall-clock 'HH:MM' for daily/weekly." }
+        schedule_days:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 7 }
+          description: ISO weekdays (1=Mon..7=Sun) for weekly.
+        schedule_tz: { type: string, description: IANA timezone for daily/weekly. }
+        enabled: { type: boolean, default: true }
+        requires_playwright:
+          type: boolean
+          default: false
+          description: Render with a real browser (JS/SPA pages). Has its own, longer interval floor.
+        preferred_region: { type: string, maxLength: 50 }
+        expected_status_code: { type: integer }
+        timeout_ms: { type: integer }
+        max_response_time_ms: { type: integer }
+        check_ssl: { type: boolean }
+        use_residential: { type: boolean }
+        residential_country: { type: string, maxLength: 64 }
+
+    CloudMonitorChange:
+      type: object
+      description: One detected change in a cloud monitor's history.
+      properties:
+        id: { type: string }
+        targetId: { type: string }
+        timestamp: { type: string }
+        oldContent: { type: string }
+        newContent: { type: string }
+        diff: { type: string }
+        detectedBy: { type: string }
+        selectorId: { type: integer, nullable: true }
+        selectorName: { type: string, nullable: true }
+        screenshotBefore:
+          type: string
+          nullable: true
+          description: Same-origin proxy path, present only when that snapshot has stored bytes.
+        screenshotAfter: { type: string, nullable: true }
+        screenshotDiff: { type: string, nullable: true }
+
+    CloudMonitorRunResult:
+      type: object
+      description: Outcome of an out-of-schedule check.
+      properties:
+        ok: { type: boolean }
+        dispatched: { type: integer }
+        detail:
+          type: string
+          description: Present when `ok` is false — e.g. no recorder is assigned to this monitor yet.
+
+    CloudCrawlJob:
+      allOf:
+        - $ref: '#/components/schemas/CrawlJob'
+        - type: object
+          description: >-
+            A crawl as WRIT CLOUD returns it. Identical to the daemon's `CrawlJob` EXCEPT `brand`,
+            which the cloud sends as an object while the daemon sends a bare string. Clients must
+            accept both; typing it as a string alone makes a real cloud response fail to decode.
+          properties:
+            brand:
+              type: object
+              properties:
+                crawl: { type: string }
+                agent: { type: string }
+
+    PlanLimitError:
+      type: object
+      description: >-
+        A plan-ceiling denial (`402`). Distinguished from a credits/wallet 402 by carrying a numeric
+        `limit`; clients should branch on that rather than on a code allowlist, which would drift as
+        new limits are added.
+      properties:
+        detail: { type: string, description: Human-readable reason, naming the limit in words. }
+        code:
+          type: string
+          description: Which ceiling was hit.
+          example: interval_too_short
+        current: { type: integer, description: Present usage. }
+        limit: { type: integer, description: The ceiling that was hit. }
+        upgrade_hint:
+          type: string
+          nullable: true
+          description: The plan that would clear it, when the server names one.
+
     CrawlJob:
       type: object
       description: >-
@@ -6267,3 +7173,142 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CrawlJob'
+
+    CrawlDefinition:
+      type: object
+      description: >-
+        A SAVED crawl — a stored crawl configuration with a stable slug. A CrawlJob is one
+        RUN and its id dies with that run, so this is what makes a crawl callable and
+        re-runnable, and what gives `max_age` a history to answer from.
+      required: [id, slug, name, seed_url]
+      properties:
+        id: { type: integer, format: int64 }
+        slug:
+          type: string
+          description: URL-safe stable ref used by the callable endpoint.
+        name: { type: string }
+        description: { type: string, nullable: true }
+        seed_url: { type: string }
+        config:
+          type: object
+          additionalProperties: true
+          description: The saved start-crawl body. Send it back verbatim to edit.
+        default_max_age_seconds:
+          type: integer
+          nullable: true
+          description: Freshness used when a caller omits `max_age`; null means always re-crawl.
+        created_at: { type: string, nullable: true }
+        updated_at: { type: string, nullable: true }
+        last_run_at: { type: string, nullable: true }
+        run_url: { type: string }
+        data_url: { type: string }
+
+    CrawlDefinitionList:
+      type: object
+      description: The saved-crawl list payload (non-Page — a `definitions` array).
+      required: [definitions]
+      properties:
+        definitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CrawlDefinition'
+
+    SaveCrawlBody:
+      type: object
+      description: Supply exactly one of `config` / `from_crawl_id`.
+      properties:
+        name: { type: string, maxLength: 200 }
+        slug: { type: string, maxLength: 120 }
+        description: { type: string }
+        default_max_age_seconds: { type: integer, minimum: 0, nullable: true }
+        config:
+          $ref: '#/components/schemas/CrawlStartRequest'
+        from_crawl_id:
+          type: integer
+          format: int64
+          description: >-
+            Capture the settings an existing crawl ran with. Preferred over rebuilding
+            `config`: a crawl's status view does not echo every knob, so a client-rebuilt
+            config silently substitutes defaults.
+
+    RunSavedCrawlBody:
+      type: object
+      description: DELIVERY controls only — the crawl settings are the saved ones.
+      properties:
+        max_age:
+          type: integer
+          minimum: 0
+          description: Reuse the last completed crawl if it finished within this many seconds. 0 always re-crawls.
+        wait:
+          type: boolean
+          default: false
+          description: Block until the crawl converges. Default false, because a whole-site crawl is slow.
+        timeout: { type: integer, minimum: 5, maximum: 300, default: 120 }
+        limit: { type: integer, minimum: 1, maximum: 500, default: 50 }
+
+    CacheStamp:
+      type: object
+      description: >-
+        Freshness provenance. Stamped into the BODY, not only into headers, because an MCP
+        tool or SDK client receives a payload and would never see a header.
+      required: [hit]
+      properties:
+        hit:
+          type: boolean
+          description: True when the answer reused already-collected data (nothing was crawled).
+        age_seconds: { type: integer }
+        source_crawl_id: { type: integer, format: int64 }
+
+    CrawlDataTable:
+      type: object
+      description: A page of a crawl's collected rows, in the Workflow Data API's shape.
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total: { type: integer }
+        truncated: { type: boolean }
+
+    SavedCrawlRun:
+      type: object
+      description: >-
+        Two shapes behind one call. On a freshness HIT (`cached: true`) `data` is inline and
+        nothing was crawled. On a MISS a crawl was dispatched and `data` is absent.
+      required: [cached, definition, crawl]
+      properties:
+        cached: { type: boolean }
+        _cache:
+          $ref: '#/components/schemas/CacheStamp'
+        definition:
+          $ref: '#/components/schemas/CrawlDefinition'
+        crawl:
+          $ref: '#/components/schemas/CrawlJob'
+        status_url: { type: string, nullable: true }
+        data_url: { type: string, nullable: true }
+        data:
+          allOf:
+            - $ref: '#/components/schemas/CrawlDataTable'
+          nullable: true
+
+    SavedCrawlData:
+      type: object
+      description: A pure read of a saved crawl's latest completed run; never crawls.
+      required: [definition]
+      properties:
+        definition:
+          $ref: '#/components/schemas/CrawlDefinition'
+        crawl:
+          allOf:
+            - $ref: '#/components/schemas/CrawlJob'
+          nullable: true
+        age_seconds: { type: number, nullable: true }
+        data_url: { type: string, nullable: true }
+        data:
+          allOf:
+            - $ref: '#/components/schemas/CrawlDataTable'
+          nullable: true

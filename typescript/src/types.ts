@@ -45,6 +45,42 @@ export function normalizePage<T>(payload: unknown): Page<T> {
   );
 }
 
+/** Page size {@link autoPage} requests when the caller's params do not set one. */
+export const DEFAULT_AUTO_PAGE_SIZE = 100;
+
+/**
+ * Walk every page of a `limit`/`offset` list endpoint, yielding rows one at a
+ * time and fetching the next page only when the current one is exhausted.
+ *
+ * ```ts
+ * for await (const run of autoPage((p) => client.runs.list(p))) {
+ *   console.log(run.id);
+ * }
+ * ```
+ *
+ * Without this, "list everything" means hand-rolling an offset loop at every
+ * call site — and the usual mistake is stopping at the first page, silently
+ * processing 100 of 4,000 rows with no error to show for it.
+ *
+ * Iteration stops when a page comes back short, which is the honest
+ * end-of-data signal for an offset walk. `break` stops the fetching too.
+ */
+export async function* autoPage<T, P extends { limit?: number; offset?: number }>(
+  list: (params: P) => Promise<Page<T>>,
+  params?: P,
+): AsyncGenerator<T, void, undefined> {
+  const base = { ...(params ?? ({} as P)) };
+  const limit = base.limit && base.limit > 0 ? base.limit : DEFAULT_AUTO_PAGE_SIZE;
+  let offset = base.offset && base.offset > 0 ? base.offset : 0;
+
+  for (;;) {
+    const page = await list({ ...base, limit, offset } as P);
+    for (const row of page.data) yield row;
+    if (page.data.length < limit) return;
+    offset += page.data.length;
+  }
+}
+
 /** Open string enum helper: known literals + any other string. */
 export type OpenEnum<T extends string> = T | (string & {});
 
@@ -274,6 +310,15 @@ export interface RunOptions {
    */
   wait?: boolean;
   /**
+   * Reuse a recent answer instead of running: if this workflow's last successful
+   * run with the SAME inputs finished within this many seconds, its data is
+   * returned and nothing executes. The response carries `_cache.hit` /
+   * `_cache.age_seconds` so you can always tell which you got.
+   *
+   * Omit it (or pass 0) for the unchanged behaviour — always run.
+   */
+  maxAge?: number;
+  /**
    * Seconds the daemon may block for when `wait` is set. Clamped server-side to
    * [1, 3600]; default 120. On expiry the call throws a {@link WritTimeoutError}
    * carrying the still-valid `run_id` — the run is NOT cancelled.
@@ -398,6 +443,124 @@ export function runRowId(item: RunFeedItem | string): number {
     throw new WritError(`cannot extract a numeric run row id from ${JSON.stringify(id)}`);
   }
   return n;
+}
+
+/** One bindable file input on a workflow — see {@link fileSlots}. */
+export interface FileSlot {
+  /** Key to use in {@link RunOptions.files}. */
+  slot: string;
+  label: string;
+  is_multiple: boolean;
+  /**
+   * File pinned on the step. Present ⇒ the run works with NO binding at all,
+   * and binding one overrides it for that run only.
+   */
+  default_file_id?: string;
+  default_filename?: string;
+  /**
+   * `true` when the workflow's author named the slot; `false` when it is keyed
+   * on the step id because the step only pins a file.
+   */
+  declared: boolean;
+}
+
+/**
+ * The file inputs of a workflow — the valid keys for {@link RunOptions.files}.
+ *
+ * Every `upload` step is a file input. Two kinds:
+ *
+ * - the step names a `file_slot` — an abstract slot whose file the CALLER
+ *   supplies. With no `default_file_id` it must be bound or the step fails;
+ * - the step pins a concrete file. It is keyed `step:<step id>` and carries that
+ *   file as `default_file_id`, so the workflow runs untouched — bind it only to
+ *   run against a DIFFERENT file.
+ *
+ * Derived from `workflow.steps` on the client, so it costs no extra round trip
+ * and works against any daemon version. A step's binding lives in `config` when
+ * the editor wrote it and in `options` when the recorder did; both are read,
+ * `config` winning as the explicit later edit. De-duped by slot,
+ * order-preserving; `[]` when the workflow has no upload steps.
+ *
+ * ```ts
+ * const wf = await client.workflows.get(7);
+ * fileSlots(wf).map((s) => s.slot); // ["resume", "step:6f2a…"]
+ * await client.workflows.run(7, { files: { resume: "file_abc" } });
+ * ```
+ */
+export function fileSlots(workflow: Pick<Workflow, "steps"> | { steps?: unknown }): FileSlot[] {
+  const steps = (workflow as { steps?: unknown } | undefined)?.steps;
+  if (!Array.isArray(steps)) return [];
+  const out: FileSlot[] = [];
+  const seen = new Set<string>();
+  steps.forEach((raw, i) => {
+    const step = raw as Record<string, any> | null;
+    if (!step || typeof step !== "object" || step.type !== "upload") return;
+    const cfg: Record<string, any> = step.config && typeof step.config === "object" ? step.config : {};
+    const opts: Record<string, any> = step.options && typeof step.options === "object" ? step.options : {};
+    const named = cfg.file_slot || opts.file_slot;
+    const declared = typeof named === "string" && named.length > 0;
+    // Keyed on the step's own id, never an ordinal: a binding has to survive the
+    // steps being reordered or one being disabled.
+    const slot = declared ? (named as string) : step.id ? `step:${step.id}` : `upload:${i + 1}`;
+    if (seen.has(slot)) return;
+    seen.add(slot);
+    const defaultFileId = cfg.file_id || opts.file_id;
+    const defaultFilename = cfg.file_name || opts.filename || opts.file_name;
+    out.push({
+      slot,
+      label:
+        cfg.label ||
+        opts.label ||
+        defaultFilename ||
+        (declared ? slot.replace(/_/g, " ") : `File ${i + 1}`),
+      is_multiple: Boolean(cfg.is_multiple || opts.is_multiple),
+      ...(defaultFileId ? { default_file_id: defaultFileId as string } : {}),
+      ...(defaultFilename ? { default_filename: defaultFilename as string } : {}),
+      declared,
+    });
+  });
+  return out;
+}
+
+/** A file a run CAPTURED (a `wait_for_download` step) — see {@link outputFiles}. */
+export interface OutputFile {
+  /** Handle in the vault — read the bytes with `client.files.content(file_id)`. */
+  file_id: string;
+  filename: string;
+  size: number;
+  content_type: string;
+  /** The step's `output_key`, when it named the capture for later reference. */
+  output_key?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Files captured by a run's download steps.
+ *
+ * A `wait_for_download` step stores what the browser downloaded and reports it
+ * as `result_data.output_files`. Accepts the completed-run document, its
+ * `result_data`, or a results payload — whichever you hold — and returns `[]`
+ * when the run captured nothing.
+ *
+ * ```ts
+ * const outcome = await client.workflows.runAndWait(7);
+ * for (const f of outputFiles(outcome)) {
+ *   const bytes = await client.files.content(f.file_id);
+ * }
+ * ```
+ */
+export function outputFiles(run: unknown): OutputFile[] {
+  if (!run || typeof run !== "object") return [];
+  const r = run as Record<string, any>;
+  const candidates = [
+    r.output_files,
+    r.result_data && typeof r.result_data === "object" ? r.result_data.output_files : undefined,
+    r.results && typeof r.results === "object" ? r.results.output_files : undefined,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c.filter((f) => f && typeof f === "object") as OutputFile[];
+  }
+  return [];
 }
 
 /** Query params for `GET /v1/runs` (pass-through). */
@@ -591,10 +754,57 @@ export interface MonitorHistory {
 }
 
 /** One entry of the global `GET /v1/changes/recent` feed. */
+/**
+ * One row of the GLOBAL recent-changes feed — the daemon's
+ * `GET /v1/changes/recent` and the cloud's `GET /api/targets/changes/recent`,
+ * which serialise the identical shape. snake_case with INTEGER ids.
+ *
+ * It carries a feed row's worth of data: the monitor URL, which selector fired,
+ * a server-truncated diff snippet, and the two timestamps. Full before/after
+ * content lives on the per-monitor change route (`CloudMonitorChange`), which is
+ * a genuinely different shape — camelCase, string ids — and must not be confused
+ * with this one.
+ */
 export interface RecentChange {
+  id: number;
+  target_id: number;
   target_url: string;
+  /** Which selector fired — null for a whole-page monitor. */
+  target_selector_id?: number | null;
+  selector_name?: string | null;
+  /** Truncated server-side to a feed-friendly length. */
   diff_snippet?: string | null;
-  [key: string]: unknown;
+  /**
+   * `first_detected_at` is when this content first differed. `last_detected_at`
+   * moves forward every time the SAME difference is seen again, which is why it
+   * — not `first_detected_at` — is the feed's sort key and the value a cursor
+   * advances to. A row you have already processed legitimately reappears with a
+   * later `last_detected_at`: that is a fresh detection, not a duplicate.
+   */
+  first_detected_at: string;
+  last_detected_at: string;
+}
+
+/**
+ * Filters for either change feed.
+ *
+ * Leaving `since` unset gives the newest-first browsing view. Setting it
+ * switches the server to an oldest-first keyset walk returning only what was
+ * detected AFTER that point — which is what a poller wants: newest-first plus a
+ * limit silently drops changes whenever more than `limit` of them land between
+ * two polls.
+ */
+export interface ChangeListParams {
+  /** Page size. Omit for the API default. */
+  limit?: number;
+  /** ISO-8601 cursor — the `last_detected_at` of the last row you processed. */
+  since?: string;
+  /**
+   * That row's id, breaking ties between changes sharing one timestamp. Without
+   * it two rows in the same millisecond can straddle the page boundary and the
+   * trailing one is never returned again.
+   */
+  since_id?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1236,24 @@ export type CrawlStatus = OpenEnum<
  * arrive as `0/1` ints from SQLite — they are kept as numbers (mirrors the
  * monitor rows).
  */
+/**
+ * Display naming a crawl view carries, in the TWO shapes two different services
+ * answer with:
+ *
+ *   • the LOCAL daemon sends a bare string — `"Dragnet"`
+ *   • Writ Cloud sends an object — `{"crawl": "Dragnet", "agent": "Scribe"}`
+ *
+ * Narrow it with a `typeof` check before reading a name. Typing this as a string
+ * alone made the typed SDKs fail to decode a real cloud crawl outright; here it
+ * was only a lie, since TypeScript does not validate at runtime.
+ */
+export type CrawlBrand = OpenEnum<"Dragnet"> | { crawl: string; agent?: string };
+
+/** The crawler display name, whichever shape {@link CrawlBrand} arrived in. */
+export function crawlBrandName(brand: CrawlBrand): string {
+  return typeof brand === "string" ? brand : brand.crawl;
+}
+
 export interface CrawlJob {
   id: number;
   name: string;
@@ -1059,7 +1287,13 @@ export interface CrawlJob {
   current_depth: number;
   error: string | null;
   cancel_requested: number;
-  brand: OpenEnum<"Dragnet">;
+  /**
+   * Display naming, in the TWO shapes two different services answer with: the
+   * LOCAL daemon sends a bare string (`"Dragnet"`), while Writ Cloud sends an
+   * object (`{crawl, agent}`). Typing this as a string alone was a lie about the
+   * cloud response — and in the typed SDKs it was a hard decode failure.
+   */
+  brand: CrawlBrand;
   is_terminal: boolean;
   created_at: string;
   updated_at: string | null;
@@ -1103,6 +1337,118 @@ export interface CrawlStartBody {
    * extraction. Forwarded to the cloud when linked; honored locally in the self-host build.
    */
   content?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * A SAVED crawl — a stored configuration with a stable slug.
+ *
+ * A {@link CrawlJob} is one RUN and its id dies with that run, so a crawl had no
+ * stable handle to call. A definition owns the settings, so it can be re-run with
+ * exactly those settings and — via `maxAge` — answered from the data it already
+ * collected.
+ */
+export interface CrawlDefinition {
+  id: number;
+  slug: string;
+  name: string;
+  description?: string | null;
+  seed_url: string;
+  /** The saved start-crawl body. Send it back verbatim to edit. */
+  config: Partial<CrawlStartBody> & { url?: string };
+  /** Freshness used when a caller omits `maxAge` (null = always re-crawl). */
+  default_max_age_seconds?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_run_at?: string | null;
+  run_url?: string;
+  data_url?: string;
+  [key: string]: unknown;
+}
+
+/** `GET /v1/crawl/definitions` response — `{definitions: [...]}`, not a Page. */
+export interface CrawlDefinitionList {
+  definitions: CrawlDefinition[];
+  [key: string]: unknown;
+}
+
+/** Body for {@link CrawlApi.save}. Supply exactly one of `config` / `fromCrawlId`. */
+export interface SaveCrawlBody {
+  name?: string;
+  slug?: string;
+  description?: string;
+  /** Freshness applied when a caller omits `maxAge`; omit for "always re-crawl". */
+  defaultMaxAgeSeconds?: number | null;
+  /** The settings to save. */
+  config?: CrawlStartBody;
+  /**
+   * Capture the settings an existing crawl ran with. Preferred over rebuilding
+   * `config` client-side: a crawl's status view does not echo every knob, so a
+   * rebuilt config silently substitutes defaults.
+   */
+  fromCrawlId?: number;
+}
+
+/**
+ * Freshness provenance, present on every saved-crawl answer.
+ *
+ * Stamped into the BODY rather than only into headers, because an SDK caller (and
+ * an MCP tool) receives a payload, not an HTTP response — a header-only signal
+ * would be invisible exactly where it matters most.
+ */
+export interface CacheStamp {
+  /** True when this answer reused already-collected data (nothing was crawled). */
+  hit: boolean;
+  age_seconds?: number;
+  /** The crawl whose data was served. */
+  source_crawl_id?: number;
+}
+
+/** A page of a crawl's collected rows, in the Workflow Data API's shape. */
+export interface CrawlDataTable {
+  columns?: string[];
+  rows?: Array<Record<string, unknown>>;
+  total?: number;
+  truncated?: boolean;
+}
+
+/** Delivery controls for {@link CrawlApi.runSaved}. Never crawl settings. */
+export interface RunSavedCrawlOptions {
+  /** Reuse the last completed crawl if it finished within this many seconds. */
+  maxAge?: number;
+  /** Block until the crawl converges. Default false — a crawl is slow. */
+  wait?: boolean;
+  /** Seconds to block for when `wait` is set (server clamp 5–300). */
+  timeout?: number;
+  /** Rows of collected data to inline. */
+  limit?: number;
+}
+
+/**
+ * `POST /v1/crawl/definitions/:ref/run` — two shapes behind one call.
+ *
+ * On a freshness HIT (`cached: true`) the collected `data` is inline and nothing
+ * was crawled. On a MISS a crawl was dispatched and `data` is absent — poll
+ * `status_url`, or pass `wait: true`.
+ */
+export interface SavedCrawlRun {
+  cached: boolean;
+  _cache?: CacheStamp;
+  definition: CrawlDefinition;
+  crawl: CrawlJob;
+  status_url?: string | null;
+  data_url?: string | null;
+  data?: CrawlDataTable | null;
+  [key: string]: unknown;
+}
+
+/** `GET /v1/crawl/definitions/:ref/data` — a pure read; never crawls. */
+export interface SavedCrawlData {
+  definition: CrawlDefinition;
+  crawl: CrawlJob | null;
+  age_seconds?: number | null;
+  data_url?: string | null;
+  data?: CrawlDataTable | null;
   [key: string]: unknown;
 }
 

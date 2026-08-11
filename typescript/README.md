@@ -155,7 +155,7 @@ as a `WritRunTimeoutError` carrying the still-valid run id — the run keeps goi
 collect it rather than retrying (a retry starts a *second* run):
 
 ```ts
-import { WritRunTimeoutError } from "@usewrit/agent";
+import { WritRunTimeoutError } from "@usewrit/agent-sdk";
 
 try {
   await client.workflows.run(3, { wait: true, timeout: 30 });

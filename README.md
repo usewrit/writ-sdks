@@ -29,8 +29,9 @@
 Official SDKs for [Writ](https://github.com/usewrit/writ). They drive the
 **`writ-agentd` daemon on your own machine** — run saved browser workflows, read
 the data they collect, manage monitors and automations, record new ones — and the
-crawl surface (scrape a page to clean markdown, map a site, run a crawl) against
-**your own self-hosted coordinator or Writ Cloud**, whichever you run.
+crawl surface (scrape a page to clean markdown, map a site, run a crawl, save a crawl
+and call it again) against **your own self-hosted coordinator or Writ Cloud**,
+whichever you run.
 
 Same code either way: one env var decides where the work happens. All four SDKs
 implement the same specification, so an example translates almost line for line
@@ -77,9 +78,11 @@ writ.workflows.list()
 ### 2. Your self-hosted coordinator
 
 The `.cloud` namespace is **not hosted-only** — it speaks the coordinator's own
-`/api/crawl*` API, which your self-host instance already serves. Point it at your
-server and `scrape`, `map`, `crawl` and `crawl_status` run entirely on your
-infrastructure:
+API, which your self-host instance already serves. Point it at your server and
+the whole surface runs on your infrastructure: `scrape`, `map`, `crawl` /
+`crawl_status`, `monitors` (including `run` and `watch`), `automations` and
+`personas`. Same verbs, same shapes, same guarantees as the hosted tier — the
+only difference is which URL you set:
 
 ```python
 writ = WritAgent(cloud_url="https://writ.example.com", api_key="wt_...")
@@ -93,7 +96,12 @@ export WRIT_API_KEY=wt_...                 # Settings → Developers → API key
 
 Create the key in your own instance under **Settings → Developers → API keys**.
 Because a key is present, calls resolve to the *metered* tier — which on your own
-server means your own metering, and no keyless client id is ever created.
+server means your own metering, and no keyless client id is ever created. (The
+keyless tier is a hosted-only concept; a self-host operator always has a key.)
+
+Your coordinator honours `Idempotency-Key` and serves the same keyset change
+cursor as the hosted tier, so retried writes cannot duplicate and
+`monitors.watch()` behaves identically on your own hardware.
 
 ### 3. Writ Cloud
 
@@ -236,12 +244,79 @@ Because these implement one contract rather than four independent clients:
   its plain-text framework rejections — plus the cloud's quota and billing
   conditions.
 - **Live run events** over SSE (`started` / `step` / `progress` / `finished` /
-  `error`), with a polling fallback if the stream drops.
+  `error`), with a polling fallback if the stream drops. A stream that drops
+  before a terminal event reconnects on its own and suppresses the frames you
+  already received, so you see one continuous, gap-free, duplicate-free stream
+  across a proxy timeout or a restart.
+- **`monitors.watch()`** — detected changes as a continuous stream, in detection
+  order, with no gaps and no repeats.
+
+  Polling that feed by hand is harder than it looks: the newest-first view
+  silently drops changes whenever more than `limit` of them land between two
+  polls, and a change row is *updated* (not re-inserted) when the same
+  difference recurs, so an id you already processed can resurface. `watch()`
+  drives the server's keyset cursor instead, so "everything after this point" is
+  exact — and a resurfaced id arrives as what it actually is, a fresh detection.
+  Persist the last change's `last_detected_at` + `id` and hand them back as
+  `since` / `since_id` to resume across restarts.
+- **Retries that cannot duplicate work.** Transient failures (429, 408/425,
+  502/503/504, dropped sockets) retry with exponential backoff and full jitter,
+  honouring `Retry-After` — except when the server asks for longer than the SDK
+  is willing to sleep, where you get the real response instead, which carries the
+  reset time.
+
+  `GET`/`HEAD`/`OPTIONS` always retry. `POST`/`PUT`/`PATCH` retry **only** where
+  the server honours `Idempotency-Key` (Writ Cloud and a self-hosted
+  coordinator), and every attempt of one logical call reuses the same key, so the
+  server replays its first answer instead of executing twice. Against the local
+  agent — which has no such lane — an unsafe method is never retried, because a
+  second `POST` there is a second monitor.
+- **Webhook verification.** `verify_webhook` / `verifyWebhook` / `VerifyWebhook`
+  authenticates a delivery in constant time and enforces the replay window.
+  Verify `X-Writ-Signature-V1`, which covers `"{timestamp}." + body`; the
+  body-only `X-Writ-Signature` is still sent for handlers written before V1 and
+  is refused by default, because nothing ties it to a point in time. There is a
+  signing helper for the inbound direction too.
+- **Auto-pagination** over `limit`/`offset` list endpoints, so "list everything"
+  is one loop instead of an offset walk you have to remember to write.
 - **`run_and_wait`** that times out *without cancelling the run* — the run
   continues server-side; the timeout bounds your wait, not its lifetime.
+- **`max_age` freshness**, one contract on both the workflow and the crawl side:
+  "an answer collected within this many seconds is acceptable, otherwise go get it
+  again". Every answer carries `_cache.hit` / `_cache.age_seconds` in the BODY —
+  not only in headers, since an SDK caller receives a decoded payload and would
+  never see a header. Omit it and nothing changes: work always runs.
+- **Saved crawls.** A crawl row is one RUN whose id dies with it, so
+  `crawl.save(...)` stores the settings under a stable slug and `crawl.run_saved(...)`
+  re-runs exactly those — or hands back the pages it already collected when
+  `max_age` allows. `crawl.saved_data(...)` reads what is there at any age and never
+  crawls.
+- **File assets on both sides of a run.** A run can consume files (upload steps)
+  and produce them (`wait_for_download`), and each direction has one helper:
+
+  `file_slots(workflow)` / `fileSlots` / `FileSlots` reports what you may bind —
+  the valid keys for the run's `files` map. Every upload step is an input. One
+  that names a slot must be bound by you; one that just pins a file is keyed
+  `step:<step id>` and already runs, so binding it *overrides* that file for a
+  single run instead of editing the workflow. Each entry carries the pinned file
+  as its default, so you can tell the two apart without guessing.
+
+  `output_files(run)` / `outputFiles` / `OutputFiles` returns what the run
+  captured — `{file_id, filename, size, content_type, output_key?}` — and the
+  bytes come back through the ordinary files API. Both are derived from data you
+  already hold, so neither costs a round trip and both work against any daemon
+  version.
+
+  ```python
+  wf = client.workflows.get(7)
+  [s["slot"] for s in file_slots(wf)]          # ['resume', 'step:6f2a…']
+  out = client.workflows.run_and_wait(7, files={"resume": "file_abc"})
+  for f in output_files(out):
+      data = client.files.content(f["file_id"])
+  ```
 
 The binding specification is [`DESIGN.md`](DESIGN.md); the wire is documented in
-[`openapi/writ-agent.yaml`](openapi/writ-agent.yaml) (OpenAPI 3.1, 56 paths, 81
+[`openapi/writ-agent.yaml`](openapi/writ-agent.yaml) (OpenAPI 3.1, 73 paths, 102
 operations). It documents wire truth **including the inconsistencies** — that is
 why the SDKs can paper over them. **When a document and the daemon disagree, the
 daemon wins.**
@@ -258,7 +333,7 @@ codegen/      generate.sh                Java/C#/Ruby/PHP via openapi-generator
 DESIGN.md                                the binding cross-language contract
 ```
 
-## Not covered in 0.1.x
+## Not covered in 1.1.x
 
 OAuth authorization-server endpoints (the SDKs consume tokens, they don't mint
 them), the `/mcp` JSON-RPC surface — use

@@ -32,7 +32,7 @@ import (
 )
 
 // Version is the SDK version reported in the User-Agent header.
-const Version = "0.1.0"
+const Version = "1.1.0"
 
 // userAgent is sent on every request as required by the cross-SDK contract.
 const userAgent = "writ-sdk-go/" + Version
@@ -64,6 +64,9 @@ type Client struct {
 
 	// Poll cadence for the RunAndWait fallback; overridable in tests.
 	pollInterval time.Duration
+
+	// retry overrides DefaultRetryPolicy when non-nil (WithRetry).
+	retry *RetryPolicy
 
 	Agent       *AgentService
 	Workflows   *WorkflowsService
@@ -242,6 +245,18 @@ func (c *Client) http() *http.Client {
 	return c.httpc
 }
 
+// retryPolicy is the policy for LOCAL daemon calls. Unsafe methods are never
+// retried here: the daemon has no Idempotency-Key lane, so a repeated POST is a
+// second monitor, not a replayed answer.
+func (c *Client) retryPolicy() RetryPolicy {
+	if c.retry != nil {
+		p := *c.retry
+		p.RetryUnsafeMethods = false
+		return p
+	}
+	return DefaultRetryPolicy
+}
+
 // WSTicket mints a single-use WebSocket connect ticket
 // (POST /v1/ws-ticket). route is "record" or "ai-preview"; channel is
 // required for "ai-preview" and must be empty for "record".
@@ -256,3 +271,15 @@ func (c *Client) WSTicket(ctx context.Context, route, channel string) (*WSTicket
 	}
 	return &out, nil
 }
+
+// Ptr returns a pointer to v. Optional fields in the params structs are pointers
+// so an unset field is omitted rather than sent as a zero value — which means a
+// literal needs an addressable variable. Ptr removes that two-line dance:
+//
+//	period := int64(300_000)
+//	params := writ.CloudMonitorParams{CheckPeriodMs: &period}
+//
+// becomes
+//
+//	params := writ.CloudMonitorParams{CheckPeriodMs: writ.Ptr(int64(300_000))}
+func Ptr[T any](v T) *T { return &v }

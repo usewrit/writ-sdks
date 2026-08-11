@@ -8,6 +8,8 @@ import json
 import httpx
 import pytest
 
+from writ_agent._version import __version__
+
 from writ_agent import (
     Page,
     WritAgent,
@@ -30,7 +32,7 @@ def test_auth_and_user_agent_headers_on_the_wire():
     with make_client(handler) as client:
         client.agent.status()
     assert seen["auth"] == f"Bearer {TOKEN}"
-    assert seen["ua"] == "writ-sdk-python/0.1.0"
+    assert seen["ua"] == f"writ-sdk-python/{__version__}"
 
 
 def test_trailing_slash_base_url_is_stripped():

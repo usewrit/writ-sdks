@@ -37,17 +37,40 @@ export {
   WritApiKeyRequiredError,
   WritInsufficientCreditsError,
   WritRateLimitedError,
+  WritPlanLimitError,
   WritRunTimeoutError,
   codeForStatus,
 } from "./errors.js";
 
-export { CloudApi } from "./cloud.js";
+export {
+  CloudApi,
+  CloudMonitors,
+  CloudAutomations,
+  CloudPersonas,
+  CloudBuilds,
+  TERMINAL_BUILD_STATUSES,
+} from "./cloud.js";
 export type {
   CloudOptions,
   CloudTier,
   KeylessQuota,
   ScrapeResult,
   MapResult,
+  CloudMonitor,
+  CloudMonitorCreate,
+  CloudMonitorPatch,
+  CloudMonitorListParams,
+  CloudMonitorChange,
+  CloudMonitorRunResult,
+  CloudAutomation,
+  CloudAutomationCreate,
+  CloudAutomationListParams,
+  CloudPersona,
+  CloudPersonaCreate,
+  TotpValidation,
+  CloudBuild,
+  CloudBuildOptions,
+  KeylessCrawlResult,
 } from "./cloud.js";
 
 export { discoverAgent, normalizeBaseUrl } from "./discovery.js";
@@ -56,7 +79,40 @@ export type { DiscoveryOptions, ResolvedConnection, RuntimeInfo } from "./discov
 export { iterateSseFrames } from "./sse.js";
 export type { SseFrame } from "./sse.js";
 
-export { normalizePage, runRowId, isTerminalEvent } from "./types.js";
+export { watchChanges } from "./cloud.js";
+export type { WatchOptions } from "./cloud.js";
+
+export {
+  DEFAULT_RETRY_POLICY,
+  backoffMs,
+  isSafeMethod,
+  newIdempotencyKey,
+  retryAfterMs,
+  withRetry,
+} from "./retry.js";
+export type { RetryPolicy } from "./retry.js";
+
+export {
+  DEFAULT_WEBHOOK_TOLERANCE_MS,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_SIGNATURE_V1_HEADER,
+  WEBHOOK_TIMESTAMP_HEADER,
+  WritWebhookVerificationError,
+  signWebhookRequest,
+  verifyWebhook,
+} from "./webhook.js";
+export type { HeaderSource, VerifyWebhookOptions, WebhookFailureReason } from "./webhook.js";
+
+export {
+  DEFAULT_AUTO_PAGE_SIZE,
+  autoPage,
+  normalizePage,
+  runRowId,
+  fileSlots,
+  outputFiles,
+  isTerminalEvent,
+  crawlBrandName,
+} from "./types.js";
 export type {
   AgentStatus,
   ApiKey,
@@ -66,9 +122,14 @@ export type {
   AutomationRunResult,
   AutomationUpdate,
   CancelResult,
+  ChangeListParams,
   CrawlCancelResult,
   CrawlJob,
   CrawlList,
+  CacheStamp,
+  CrawlDataTable,
+  CrawlDefinition,
+  CrawlDefinitionList,
   CrawlStartBody,
   CrawlStatus,
   DataDeleteBody,
@@ -88,6 +149,7 @@ export type {
   ExtractorUpdate,
   FileFromDataBody,
   FileMeta,
+  FileSlot,
   FileUploadOptions,
   Health,
   Monitor,
@@ -95,6 +157,7 @@ export type {
   MonitorHistory,
   MonitorUpdate,
   OpenEnum,
+  OutputFile,
   Page,
   Persona,
   PersonaRun,
@@ -111,6 +174,10 @@ export type {
   RunFeedItem,
   RunListParams,
   RunOptions,
+  RunSavedCrawlOptions,
+  SaveCrawlBody,
+  SavedCrawlData,
+  SavedCrawlRun,
   RunResults,
   RunStarted,
   RunStatus,
@@ -133,6 +200,7 @@ export type {
   WorkflowUpdate,
   WsTicket,
   WsTicketRoute,
+  CrawlBrand,
 } from "./types.js";
 
 export { USER_AGENT, VERSION } from "./version.js";

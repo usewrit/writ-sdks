@@ -27,8 +27,11 @@ func TestHeadersOnTheWire(t *testing.T) {
 	if auth := got.Get("Authorization"); auth != "Bearer test-token" {
 		t.Errorf("Authorization = %q", auth)
 	}
-	if ua := got.Get("User-Agent"); ua != "writ-sdk-go/0.1.0" {
-		t.Errorf("User-Agent = %q", ua)
+	// Built from the Version constant, not a literal: the SHAPE
+	// (`writ-sdk-go/<version>`, DESIGN.md §2) is the contract, and pinning the
+	// digits here just means every release ships a red test.
+	if want := "writ-sdk-go/" + Version; got.Get("User-Agent") != want {
+		t.Errorf("User-Agent = %q, want %q", got.Get("User-Agent"), want)
 	}
 	if accept := got.Get("Accept"); accept != "application/json" {
 		t.Errorf("Accept = %q", accept)

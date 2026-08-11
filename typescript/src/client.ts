@@ -6,7 +6,9 @@
 
 import { HttpClient } from "./http.js";
 import type { HttpClientOptions, QueryParams } from "./http.js";
-import { CloudApi } from "./cloud.js";
+import { CloudApi, watchChanges } from "./cloud.js";
+import type { WatchOptions } from "./cloud.js";
+import { DEFAULT_RETRY_POLICY, backoffMs, sleep as retrySleep } from "./retry.js";
 import { WritConnectionError, WritError, WritRunTimeoutError } from "./errors.js";
 import { iterateSseFrames } from "./sse.js";
 import { isTerminalEvent, normalizePage } from "./types.js";
@@ -20,6 +22,9 @@ import type {
   AutomationUpdate,
   CancelResult,
   CrawlCancelResult,
+  CrawlDataTable,
+  CrawlDefinition,
+  CrawlDefinitionList,
   CrawlJob,
   CrawlList,
   CrawlStartBody,
@@ -47,6 +52,7 @@ import type {
   Persona,
   PersonaRun,
   PersonaWrite,
+  ChangeListParams,
   RecentChange,
   RunAndWaitOptions,
   RunCompleted,
@@ -55,6 +61,10 @@ import type {
   RunFeedItem,
   RunListParams,
   RunOptions,
+  RunSavedCrawlOptions,
+  SaveCrawlBody,
+  SavedCrawlData,
+  SavedCrawlRun,
   RunResults,
   RunStarted,
   SecretListParams,
@@ -161,34 +171,84 @@ export class RunsApi {
    * yielded as typed {@link RunEvent}s. The iterator completes after the
    * terminal `finished`/`error` event (a run that already finished yields
    * exactly one terminal event). Keep-alive comment frames are ignored.
-   * No reconnect logic — a dropped stream surfaces as a
-   * {@link WritConnectionError} (the `runAndWait` fallback handles it).
+   *
+   * A stream that DROPS before a terminal event is reconnected automatically,
+   * up to `maxReconnects` times with backoff. Reconnecting replays the run's
+   * events from the start, so already-delivered frames are suppressed by
+   * sequence: the caller sees one continuous, gap-free, duplicate-free stream
+   * across a proxy timeout or a daemon restart. Only when reconnection is
+   * exhausted does the iterator throw.
    */
   async *events(
     runId: number,
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal; maxReconnects?: number } = {},
   ): AsyncIterableIterator<RunEvent> {
-    const res = await this.http.stream("GET", `/v1/runs/${runId}/events`, {
-      signal: opts.signal,
-    });
-    if (!res.body) {
-      throw new WritConnectionError(`SSE response for run ${runId} has no body`);
-    }
-    for await (const frame of iterateSseFrames(res.body)) {
-      let event: RunEvent;
+    const maxReconnects = opts.maxReconnects ?? DEFAULT_MAX_RECONNECTS;
+    // Frames already handed to the caller. The daemon has no Last-Event-ID
+    // lane, so resumption is client-side: replay and skip what we have seen.
+    let delivered = 0;
+    let attempts = 0;
+
+    for (;;) {
+      const res = await this.http.stream("GET", `/v1/runs/${runId}/events`, {
+        signal: opts.signal,
+      });
+      if (!res.body) {
+        throw new WritConnectionError(`SSE response for run ${runId} has no body`);
+      }
+
+      let seen = 0;
+      let terminal = false;
+      let dropError: unknown = null;
       try {
-        event = JSON.parse(frame.data) as RunEvent;
-      } catch {
-        continue; // not a JSON payload — skip defensively
+        for await (const frame of iterateSseFrames(res.body)) {
+          let event: RunEvent;
+          try {
+            event = JSON.parse(frame.data) as RunEvent;
+          } catch {
+            continue; // not a JSON payload — skip defensively
+          }
+          if (typeof event !== "object" || event === null || typeof event.event !== "string") {
+            continue;
+          }
+          seen++;
+          if (seen <= delivered) continue; // replayed frame from before the drop
+          delivered = seen;
+          yield event;
+          if (isTerminalEvent(event)) {
+            terminal = true;
+            break;
+          }
+        }
+      } catch (err) {
+        if (opts.signal?.aborted) throw err;
+        dropError = err;
       }
-      if (typeof event !== "object" || event === null || typeof event.event !== "string") {
-        continue;
+
+      if (terminal) return;
+      if (opts.signal?.aborted) return;
+
+      // A clean end with no terminal event is a drop too — the run is still
+      // going and the connection simply went away.
+      attempts++;
+      if (attempts > maxReconnects) {
+        throw (
+          dropError ??
+          new WritConnectionError(
+            `run ${runId} event stream ended before a terminal event after ${maxReconnects} reconnects`,
+          )
+        );
       }
-      yield event;
-      if (isTerminalEvent(event)) return;
+      await retrySleep(backoffMs(DEFAULT_RETRY_POLICY, attempts), opts.signal);
     }
   }
 }
+
+/**
+ * How many times {@link RunsApi.events} transparently reconnects a dropped
+ * stream before giving up.
+ */
+const DEFAULT_MAX_RECONNECTS = 5;
 
 // ---------------------------------------------------------------------------
 // workflows
@@ -258,6 +318,11 @@ export class WorkflowsApi {
     const query: QueryParams = {};
     if (opts.wait) query["wait"] = true;
     if (opts.timeout !== undefined) query["timeout"] = opts.timeout;
+    // A DELIVERY control, so it rides in the query string and never in the body:
+    // inside `inputs` it would feed the workflow a stray value AND make every
+    // distinct maxAge a different request — the opposite of asking for a reusable
+    // answer.
+    if (opts.maxAge !== undefined) query["max_age"] = opts.maxAge;
 
     if (!opts.wait) {
       return this.http.json("POST", `/v1/workflows/${id}/run`, { json: body, query });
@@ -360,7 +425,13 @@ export class WorkflowsApi {
       ctrl.abort();
     }, waitTimeout);
     try {
-      for await (const event of this.runs.events(runId, { signal: ctrl.signal })) {
+      // maxReconnects: 0 — runAndWait already has a strictly better fallback
+      // than reconnecting (polling runs.get), so a dropped stream should reach
+      // it immediately instead of burning the reconnect ladder's backoff first.
+      for await (const event of this.runs.events(runId, {
+        signal: ctrl.signal,
+        maxReconnects: 0,
+      })) {
         opts.onEvent?.(event);
         if (isTerminalEvent(event)) {
           sawTerminal = true;
@@ -451,12 +522,38 @@ export class MonitorsApi {
     return this.http.json("GET", "/v1/monitors/capacity");
   }
 
-  /** `GET /v1/changes/recent` — global recent-changes feed across all monitors. */
-  async recentChanges(params?: { limit?: number }): Promise<Page<RecentChange>> {
+  /**
+   * `GET /v1/changes/recent` — global recent-changes feed across all monitors,
+   * newest first.
+   *
+   * `since` switches the daemon to an oldest-first keyset walk returning only
+   * what was detected after that cursor. Prefer that for polling: newest-first
+   * plus a limit silently drops changes whenever more than `limit` of them land
+   * between two polls. For a continuous feed use {@link watch}.
+   */
+  async recentChanges(params?: ChangeListParams): Promise<Page<RecentChange>> {
     const payload = await this.http.json<unknown>("GET", "/v1/changes/recent", {
       query: params as QueryParams,
     });
     return normalizePage<RecentChange>(payload);
+  }
+
+  /**
+   * Stream detected changes across ALL monitors on the LOCAL daemon, in
+   * detection order, without gaps or repeats.
+   *
+   * ```ts
+   * for await (const change of client.monitors.watch()) {
+   *   console.log(change.target_url, change.diff_snippet);
+   * }
+   * ```
+   *
+   * Identical semantics to `client.cloud.monitors.watch()` — same cursor, same
+   * options, same delivery guarantees — so a program can move between venues by
+   * changing which object it watches.
+   */
+  watch(opts: WatchOptions = {}): AsyncGenerator<RecentChange, void, undefined> {
+    return watchChanges(opts, async (params) => (await this.recentChanges(params)).data);
   }
 }
 
@@ -883,6 +980,138 @@ export class CrawlApi {
    */
   cancel(id: number): Promise<CrawlCancelResult> {
     return this.http.json("POST", `/v1/crawl/${id}/cancel`);
+  }
+
+  // -- saved crawls (the callable crawl API) --------------------------------
+  //
+  // A crawl row is one RUN and its id dies with that run. A SAVED crawl owns the
+  // settings under a stable slug, so it can be re-run with exactly those settings
+  // and — with `maxAge` — answered from the data it already collected.
+
+  /** `GET /v1/crawl/definitions` — newest-first saved crawls (`{definitions: []}`). */
+  saved(params?: { limit?: number }): Promise<CrawlDefinitionList> {
+    return this.http.json("GET", "/v1/crawl/definitions", { query: params as QueryParams });
+  }
+
+  /**
+   * `POST /v1/crawl/definitions` — save a crawl configuration so it becomes
+   * callable and re-runnable.
+   *
+   * Pass EITHER `config` or `fromCrawlId`. Prefer `fromCrawlId` when capturing an
+   * existing crawl: its status view does not echo every knob it ran with
+   * (politeness, shard sizing, path filters), so a config rebuilt on the client
+   * would silently substitute defaults and save a crawl that behaves differently.
+   */
+  async save(body: SaveCrawlBody): Promise<CrawlDefinition> {
+    const json: Record<string, unknown> = {};
+    if (body.name !== undefined) json["name"] = body.name;
+    if (body.slug !== undefined) json["slug"] = body.slug;
+    if (body.description !== undefined) json["description"] = body.description;
+    if (body.defaultMaxAgeSeconds !== undefined)
+      json["default_max_age_seconds"] = body.defaultMaxAgeSeconds;
+    if (body.config !== undefined) json["config"] = body.config;
+    if (body.fromCrawlId !== undefined) json["from_crawl_id"] = body.fromCrawlId;
+    if (json["config"] === undefined && json["from_crawl_id"] === undefined) {
+      // Fail here rather than POST a definition with no settings that would only
+      // break later, at run time, far from the mistake. `async` so this surfaces as
+      // a REJECTION like every other method's errors — a sync throw from a
+      // promise-returning method escapes a caller's `.catch()`.
+      throw new TypeError("crawl.save needs either `config` or `fromCrawlId`");
+    }
+    return this.http.json("POST", "/v1/crawl/definitions", { json });
+  }
+
+  /** `GET /v1/crawl/definitions/:ref` — one saved crawl by id or slug. */
+  savedGet(ref: number | string): Promise<CrawlDefinition> {
+    return this.http.json("GET", `/v1/crawl/definitions/${ref}`);
+  }
+
+  /** `PATCH /v1/crawl/definitions/:ref` — sparse update; omitted fields untouched. */
+  savedUpdate(
+    ref: number | string,
+    patch: {
+      name?: string;
+      description?: string;
+      defaultMaxAgeSeconds?: number | null;
+      config?: CrawlStartBody;
+    },
+  ): Promise<CrawlDefinition> {
+    const json: Record<string, unknown> = {};
+    if (patch.name !== undefined) json["name"] = patch.name;
+    if (patch.description !== undefined) json["description"] = patch.description;
+    if (patch.defaultMaxAgeSeconds !== undefined)
+      json["default_max_age_seconds"] = patch.defaultMaxAgeSeconds;
+    if (patch.config !== undefined) json["config"] = patch.config;
+    return this.http.json("PATCH", `/v1/crawl/definitions/${ref}`, { json });
+  }
+
+  /**
+   * `DELETE /v1/crawl/definitions/:ref` — remove a saved crawl. Its past runs and
+   * their collected data survive; only the reusable configuration goes away.
+   */
+  savedDelete(ref: number | string): Promise<void> {
+    return this.http.json("DELETE", `/v1/crawl/definitions/${ref}`);
+  }
+
+  /**
+   * `POST /v1/crawl/definitions/:ref/run` — run a saved crawl, reusing its data
+   * when `maxAge` allows.
+   *
+   * `maxAge` is a freshness contract, not a cache flag: "data collected within
+   * this many seconds is acceptable, otherwise go get it again". On a hit the
+   * previous run's rows come back inline with `_cache.hit === true` and nothing is
+   * crawled or metered; `maxAge: 0` always re-crawls.
+   *
+   * A cold call resolves with a dispatched crawl (`cached: false`, no `data`) — a
+   * whole-site crawl outlives an HTTP request, so poll `status_url` or pass
+   * `wait: true`. With `wait: true` an overrun REJECTS with a
+   * {@link WritRunTimeoutError} carrying the crawl id, so work already started
+   * stays collectable rather than being silently re-run.
+   */
+  async runSaved(
+    ref: number | string,
+    opts: RunSavedCrawlOptions = {},
+  ): Promise<SavedCrawlRun> {
+    const json: Record<string, unknown> = {};
+    if (opts.maxAge !== undefined) json["max_age"] = opts.maxAge;
+    if (opts.wait !== undefined) json["wait"] = opts.wait;
+    if (opts.timeout !== undefined) json["timeout"] = opts.timeout;
+    if (opts.limit !== undefined) json["limit"] = opts.limit;
+
+    const path = `/v1/crawl/definitions/${ref}/run`;
+    if (!opts.wait) {
+      // 202 (dispatched) is the normal cold answer and must resolve, not reject:
+      // the crawl id IS the result.
+      return this.http.json("POST", path, { json });
+    }
+    const res = await this.http.json<SavedCrawlRun & { crawl_id?: number; retryable?: boolean }>(
+      "POST",
+      path,
+      { json, allowStatuses: [504] },
+    );
+    if (res.retryable === true && res.crawl_id !== undefined) {
+      throw new WritRunTimeoutError({
+        status: 504,
+        code: "crawl_timeout",
+        message:
+          `crawl ${res.crawl_id} did not converge within the requested budget and is STILL ` +
+          `RUNNING — poll crawl.get(${res.crawl_id}); do not retry, that would start a ` +
+          `second crawl`,
+        body: res,
+        runId: res.crawl_id,
+      });
+    }
+    return res;
+  }
+
+  /**
+   * `GET /v1/crawl/definitions/:ref/data` — the rows a saved crawl already
+   * collected on its latest completed run. A pure read at any age; never crawls.
+   */
+  savedData(ref: number | string, params?: { limit?: number }): Promise<SavedCrawlData> {
+    return this.http.json("GET", `/v1/crawl/definitions/${ref}/data`, {
+      query: params as QueryParams,
+    });
   }
 }
 

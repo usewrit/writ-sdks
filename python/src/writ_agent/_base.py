@@ -42,6 +42,10 @@ SSE_READ_TIMEOUT = 25.0
 #: Default per-request timeout (seconds). run_and_wait manages its own deadline.
 DEFAULT_TIMEOUT = 30.0
 
+#: How many times a run's event stream is transparently reconnected after a
+#: pre-terminal drop before the error surfaces.
+MAX_EVENT_RECONNECTS = 5
+
 
 def request_kwargs(op: ops.Op) -> dict[str, Any]:
     """Build the httpx request kwargs for an :class:`Op` (omit unset pieces)."""

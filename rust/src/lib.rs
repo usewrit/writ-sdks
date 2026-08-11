@@ -45,25 +45,37 @@ mod error;
 mod models;
 mod page;
 mod resources;
+mod retry;
 mod sse;
 mod util;
+mod watch;
+pub mod webhook;
 
 pub use bytes::Bytes;
 pub use client::{WritAgent, WritAgentBuilder};
 pub use cloud::{
-    CloudClient, CloudClientBuilder, CloudTier, KeylessQuota, MapCounts, MapEntry, MapOptions,
-    MapResult, ScrapeResult,
+    ChangeListOptions, CloudAutomation, CloudAutomationAction, CloudAutomationListOptions,
+    CloudAutomations, CloudBuild, CloudBuildParams, CloudBuilds, CloudClient, CloudClientBuilder,
+    CloudMonitor, CloudMonitorChange, CloudMonitorListOptions, CloudMonitorRun, CloudMonitors,
+    CloudPersona, CloudPersonas, CloudTier, KeylessCrawlLimits, KeylessCrawlOptions,
+    KeylessCrawlPage, KeylessCrawlResult, KeylessQuota, MapCounts, MapEntry, MapOptions, MapResult,
+    RecentChange, ScrapeResult, TotpValidation, TERMINAL_BUILD_STATUSES,
 };
 pub use error::{Result, WritError};
+pub use models::{file_slots, output_files};
 pub use models::{
-    AgentStatus, ApiKey, Automation, CancelOutcome, CrawlCancel, CrawlJob, CrawlList,
-    CrawlStartParams, Dataset, DatasetFormat, DatasetList, DatasetMeta, DatasetRef,
-    DatasetSearchHit, DatasetSearchResult, Extra, Extractor, Health, Monitor, MonitorHistory,
-    Persona, RunCompleted, RunData, RunEvent, RunFeedItem, RunOutcome, RunResults, RunStarted,
-    SecretMeta, Selector, StoredFile, VaultStatus, Workflow, WsTicket,
+    AgentStatus, ApiKey, Automation, Brand, CacheStamp, CancelOutcome, CrawlCancel, CrawlDataTable,
+    CrawlDefinition, CrawlDefinitionList, CrawlJob, CrawlList, CrawlStartParams, Dataset,
+    DatasetFormat, DatasetList, DatasetMeta, DatasetRef, DatasetSearchHit, DatasetSearchResult,
+    Extra, Extractor, FileSlot, Health, Monitor, MonitorHistory, OutputFile, Persona, RunCompleted,
+    RunData, RunEvent, RunFeedItem, RunOutcome, RunResults, RunSavedCrawlParams, RunStarted,
+    SaveCrawlParams, SavedCrawlData, SavedCrawlRun, SecretMeta, Selector, StoredFile, VaultStatus,
+    Workflow, WsTicket,
 };
-pub use page::Page;
+pub use page::{auto_page, Page, DEFAULT_AUTO_PAGE_SIZE};
 pub use resources::{
     Agent, Automations, Crawl, Data, Datasets, Extractors, Files, Keys, Monitors, Personas,
     RunEventStream, RunOptions, Runs, Secrets, Selectors, Vault, Workflows,
 };
+pub use retry::RetryPolicy;
+pub use watch::{watch_changes, WatchOptions, CURSOR_FLOOR};

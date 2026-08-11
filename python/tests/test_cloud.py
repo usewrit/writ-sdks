@@ -91,3 +91,75 @@ def test_env_api_key_selects_metered(monkeypatch):
 def test_no_key_is_keyless(monkeypatch):
     monkeypatch.delenv("WRIT_API_KEY", raising=False)
     assert Cloud().tier == "keyless"
+
+
+# ── Server-minted device token round-trip ───────────────────────────────────
+#
+# The keyless quota subject is issued and signed by the SERVER
+# (backend/services/keyless_identity.py). The SDK's job is only to persist what
+# it is handed and present it next time; an install that never round-trips the
+# token is metered on its IP prefix, shared with every install behind the
+# same NAT.
+
+
+def _mock_issuing(token: str, status: int = 200, payload: dict | None = None):
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        headers = {}
+        # The server only mints when the caller did NOT present a valid token.
+        if not request.headers.get("x-writ-device-token"):
+            headers["X-Writ-Device-Token"] = token
+        return httpx.Response(status, json=payload or {"verb": "scrape", "markdown": "x"},
+                              headers=headers)
+
+    return httpx.MockTransport(handler), calls
+
+
+def test_device_token_is_absorbed_then_presented(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("WRIT_DEVICE_TOKEN", raising=False)
+
+    tr, calls = _mock_issuing("k1.abc.123.sig")
+    c = Cloud(transport=tr, client_id="device-123")
+
+    c.scrape("https://x.test")
+    assert "x-writ-device-token" not in calls[0].headers, "nothing to present yet"
+
+    c.scrape("https://x.test")
+    assert calls[1].headers.get("x-writ-device-token") == "k1.abc.123.sig"
+
+    # And it survives the process: a fresh client reads it back off disk.
+    tr2, calls2 = _mock_issuing("k1.other.456.sig")
+    Cloud(transport=tr2, client_id="device-123").scrape("https://x.test")
+    assert calls2[0].headers.get("x-writ-device-token") == "k1.abc.123.sig"
+
+
+def test_device_token_absorbed_even_from_a_429(tmp_path, monkeypatch):
+    """A rate-limited caller must still keep the token, or it stays anonymous
+    forever and can never earn its own bucket."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("WRIT_DEVICE_TOKEN", raising=False)
+
+    tr, _ = _mock_issuing("k1.from429.9.sig", status=429,
+                          payload={"detail": {"code": "keyless_rate_limited"}})
+    c = Cloud(transport=tr, client_id="device-123")
+    with pytest.raises(WritRateLimitedError):
+        c.scrape("https://x.test")
+
+    from writ_agent.cloud import load_device_token
+    assert load_device_token() == "k1.from429.9.sig"
+
+
+def test_metered_tier_never_sends_or_stores_a_device_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("WRIT_DEVICE_TOKEN", raising=False)
+
+    tr, calls = _mock_issuing("k1.nope.0.sig")
+    Cloud(transport=tr, api_key="wt_live").scrape("https://x.test")
+    assert calls[0].headers.get("authorization") == "Bearer wt_live"
+    assert "x-writ-device-token" not in calls[0].headers
+
+    from writ_agent.cloud import load_device_token
+    assert load_device_token() is None

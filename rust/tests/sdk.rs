@@ -657,7 +657,7 @@ async fn crawl_list_unwraps_crawls_envelope() {
     let agent = client_for(&server);
     let list = agent.crawl().list(Some(50)).await.unwrap();
     assert_eq!(list.crawls.len(), 2);
-    assert_eq!(list.crawls[0].brand, "Dragnet");
+    assert_eq!(list.crawls[0].brand.crawl(), "Dragnet");
     assert_eq!(list.crawls[1].status, "crawling");
     // `limit` passes through; boolean columns stay typed as 0/1 ints.
     assert_eq!(server.requests()[0].query.as_deref(), Some("limit=50"));
@@ -686,7 +686,7 @@ async fn crawl_start_sends_body_and_parses_view() {
         .await
         .unwrap();
     assert_eq!(job.id, 5);
-    assert_eq!(job.brand, "Dragnet");
+    assert_eq!(job.brand.crawl(), "Dragnet");
     assert_eq!(job.data_workflow_id, Some(77));
     assert_eq!(job.include_paths, vec!["^/docs".to_string()]);
 
@@ -728,7 +728,7 @@ async fn crawl_cancel_parses_cancel_requested_now() {
     assert!(out.cancel_requested_now);
     assert_eq!(out.job.id, 5);
     assert_eq!(out.job.status, "stopping");
-    assert_eq!(out.job.brand, "Dragnet");
+    assert_eq!(out.job.brand.crawl(), "Dragnet");
 }
 
 #[tokio::test]

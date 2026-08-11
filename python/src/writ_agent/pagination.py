@@ -13,11 +13,11 @@ Every SDK list method normalizes to :class:`Page` — for bare arrays,
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Generic, Iterator, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Generic, Iterator, TypeVar
 
 from .errors import WritError
 
-__all__ = ["Page"]
+__all__ = ["DEFAULT_AUTO_PAGE_SIZE", "Page", "auto_page", "auto_page_async"]
 
 T = TypeVar("T")
 
@@ -60,3 +60,55 @@ def to_page(body: Any) -> Page[Any]:
     raise WritError(
         f"unexpected list envelope from the daemon: {type(body).__name__}"
     )
+
+
+#: Page size :func:`auto_page` requests when the caller sets none.
+DEFAULT_AUTO_PAGE_SIZE = 100
+
+
+def auto_page(
+    list_fn: Callable[..., Page[T]],
+    /,
+    **params: Any,
+) -> Iterator[T]:
+    """Walk every page of a ``limit``/``offset`` list endpoint, row by row.
+
+    ::
+
+        for run in auto_page(client.runs.list):
+            print(run["id"])
+
+    Without this, "list everything" means hand-rolling an offset loop at every
+    call site — and the usual mistake is stopping at the first page, silently
+    processing 100 of 4,000 rows with no error to show for it.
+
+    Iteration stops when a page comes back short, which is the honest
+    end-of-data signal for an offset walk.
+    """
+    limit = int(params.pop("limit", 0) or DEFAULT_AUTO_PAGE_SIZE)
+    offset = int(params.pop("offset", 0) or 0)
+    while True:
+        page = list_fn(limit=limit, offset=offset, **params)
+        rows = list(page)
+        yield from rows
+        if len(rows) < limit:
+            return
+        offset += len(rows)
+
+
+async def auto_page_async(
+    list_fn: Callable[..., Awaitable[Page[T]]],
+    /,
+    **params: Any,
+) -> AsyncIterator[T]:
+    """Async twin of :func:`auto_page`."""
+    limit = int(params.pop("limit", 0) or DEFAULT_AUTO_PAGE_SIZE)
+    offset = int(params.pop("offset", 0) or 0)
+    while True:
+        page = await list_fn(limit=limit, offset=offset, **params)
+        rows = list(page)
+        for row in rows:
+            yield row
+        if len(rows) < limit:
+            return
+        offset += len(rows)

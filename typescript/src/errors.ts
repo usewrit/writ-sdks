@@ -71,6 +71,41 @@ export class WritApiKeyRequiredError extends WritApiError {}
 export class WritInsufficientCreditsError extends WritApiError {}
 
 /**
+ * A PLAN CEILING was hit, not a wallet balance — HTTP 402 from the backend's
+ * `services.plan_enforcer.PlanLimitDenied`. Codes include `interval_too_short`,
+ * `target_limit_js`/`_html`, `concurrent_browsers`, `crawl_concurrency`,
+ * `crawl_pages_exhausted` and friends.
+ *
+ * Deliberately NOT a {@link WritInsufficientCreditsError}: topping up credits does
+ * not clear a plan ceiling, and saying otherwise sends the caller to the wrong fix.
+ * The two are told apart structurally — a plan denial always reports the ceiling it
+ * hit as a numeric `limit`.
+ */
+export class WritPlanLimitError extends WritApiError {
+  /** Present usage, per the server. */
+  readonly current?: number;
+  /** The ceiling that was hit. */
+  readonly limit?: number;
+  /** The plan that would clear it, when the server named one. */
+  readonly upgradeHint?: string;
+
+  constructor(opts: {
+    status: number;
+    code: string;
+    message: string;
+    body: unknown;
+    current?: number;
+    limit?: number;
+    upgradeHint?: string;
+  }) {
+    super(opts);
+    this.current = opts.current;
+    this.limit = opts.limit;
+    this.upgradeHint = opts.upgradeHint;
+  }
+}
+
+/**
  * The keyless daily allowance (requests/day or pages/day, per device or IP) is exhausted. HTTP 429.
  * `resetAt` is when the allowance refills; add an API key for a full metered quota.
  */

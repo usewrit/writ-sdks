@@ -9,21 +9,26 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use futures_core::Stream;
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
 use reqwest::Method;
 use serde_json::{json, Value};
 
 use crate::client::{Inner, SSE_TIMEOUT};
+use crate::cloud::{ChangeListOptions, RecentChange};
 use crate::error::{Result, WritError};
 use crate::models::{
-    AgentStatus, ApiKey, Automation, CancelOutcome, CrawlCancel, CrawlJob, CrawlList,
-    CrawlStartParams, DatasetFormat, DatasetList, DatasetMeta, DatasetSearchResult, Extractor,
-    Health, Monitor, MonitorHistory, Persona, RunCompleted, RunData, RunEvent, RunFeedItem,
-    RunOutcome, RunResults, RunStarted, SecretMeta, Selector, StoredFile, VaultStatus, Workflow,
+    AgentStatus, ApiKey, Automation, CancelOutcome, CrawlCancel, CrawlDefinition,
+    CrawlDefinitionList, CrawlJob, CrawlList, CrawlStartParams, DatasetFormat, DatasetList,
+    DatasetMeta, DatasetSearchResult, Extractor, Health, Monitor, MonitorHistory, Persona,
+    RunCompleted, RunData, RunEvent, RunFeedItem, RunOutcome, RunResults, RunSavedCrawlParams,
+    RunStarted, SaveCrawlParams, SavedCrawlData, SavedCrawlRun, SecretMeta, Selector, StoredFile,
+    VaultStatus, Workflow,
 };
 use crate::page::Page;
 use crate::sse::SseParser;
+use crate::watch::WatchOptions;
 
 /// Default overall deadline for [`Workflows::run_and_wait`] (DESIGN.md §8).
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -51,6 +56,15 @@ pub struct RunOptions {
     pub wait_timeout: Option<Duration>,
     /// `run_and_wait` only: also fetch `runs().results()` after the terminal event.
     pub include_results: bool,
+    /// Reuse a recent answer instead of running: if this workflow's last successful run
+    /// with the SAME inputs finished within this window, its data is returned and nothing
+    /// executes. The response carries `_cache.hit` / `_cache.age_seconds`, so a caller can
+    /// always tell which it got.
+    ///
+    /// `None` (the default) always runs — existing callers are unaffected. Sent as a QUERY
+    /// parameter, never in the body: inside `inputs` it would feed the workflow a stray
+    /// value *and* make every distinct window a different request.
+    pub max_age: Option<Duration>,
 }
 
 impl RunOptions {
@@ -69,6 +83,11 @@ impl RunOptions {
             body.insert("dry_run".into(), json!(true));
         }
         Value::Object(body)
+    }
+
+    /// The freshness window as whole seconds, for the query string. `None` when unset.
+    fn max_age_secs(&self) -> Option<String> {
+        self.max_age.map(|d| d.as_secs().to_string())
     }
 }
 
@@ -143,11 +162,16 @@ impl Workflows<'_> {
     /// Observe the run with [`RunsApi::events`] / [`RunsApi::get`], or use
     /// [`Self::run_wait`] to have the daemon block and hand back the result directly.
     pub async fn run(&self, id: i64, opts: &RunOptions) -> Result<RunStarted> {
+        let max_age = opts.max_age_secs();
+        let mut query: Vec<(&str, &str)> = Vec::new();
+        if let Some(secs) = max_age.as_deref() {
+            query.push(("max_age", secs));
+        }
         self.c
             .send_json(
                 Method::POST,
                 &format!("/v1/workflows/{id}/run"),
-                &[],
+                &query,
                 Some(&opts.body(false)),
             )
             .await
@@ -172,9 +196,15 @@ impl Workflows<'_> {
         timeout: Option<Duration>,
     ) -> Result<RunCompleted> {
         let secs = timeout.map(|d| d.as_secs().max(1).to_string());
+        let max_age = opts.max_age_secs();
         let mut query: Vec<(&str, &str)> = vec![("wait", "true")];
         if let Some(secs) = secs.as_deref() {
             query.push(("timeout", secs));
+        }
+        // Freshness is orthogonal to waiting: reusing a recent answer and how the caller
+        // wants to be told about a fresh one are separate decisions.
+        if let Some(secs) = max_age.as_deref() {
+            query.push(("max_age", secs));
         }
         // 504 is a documented, RECOVERABLE outcome of waiting, so it is decoded as a body
         // rather than mapped to a generic API error — which would throw away the run id,
@@ -252,7 +282,21 @@ impl Workflows<'_> {
     /// **NOT cancelled**; it keeps executing on the daemon. Returns the final
     /// [`RunFeedItem`] (plus `runs().results()` when
     /// [`RunOptions::include_results`] is set).
+    ///
+    /// [`RunOptions::max_age`] is **rejected** here rather than ignored: this method exists
+    /// to observe a LIVE run event-by-event, and a reused answer has no run to observe —
+    /// there is no `run_id` to subscribe to. Silently dropping it would be worse: the caller
+    /// would believe they had opted into reuse and quietly pay for every run. Use
+    /// [`Self::run`] or [`Self::run_wait`] for the freshness path.
     pub async fn run_and_wait(&self, id: i64, opts: &RunOptions) -> Result<RunOutcome> {
+        if opts.max_age.is_some_and(|d| !d.is_zero()) {
+            return Err(WritError::Connection(
+                "run_and_wait cannot honour max_age — it follows a live run's events, and a \
+                 reused result has no run to follow. Use run() or run_wait() for the \
+                 freshness path"
+                    .into(),
+            ));
+        }
         let started = self.run(id, opts).await?;
         let run_id = started.run_id;
         let wait = opts.wait_timeout.unwrap_or(DEFAULT_WAIT_TIMEOUT);
@@ -272,7 +316,9 @@ impl Workflows<'_> {
         let mut saw_terminal = false;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if !remaining.is_zero() {
-            if let Ok(mut stream) = runs.events_with_timeout(run_id, remaining).await {
+            // max_reconnects 0: the polling fallback below is strictly better
+            // than reconnecting, so a dropped stream should reach it at once.
+            if let Ok(mut stream) = runs.events_inner(run_id, remaining, 0).await {
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(ev) if ev.is_terminal() => {
@@ -383,8 +429,14 @@ impl Runs<'_> {
     /// `GET /v1/runs/:id/events` — live SSE stream of [`RunEvent`]s. The stream
     /// ends after the terminal `finished`/`error` frame (a run that is already
     /// finished yields exactly one terminal frame). Keep-alive comments are
-    /// consumed by the parser. No reconnect logic in v1 — a dropped stream
-    /// surfaces as an `Err` item.
+    /// consumed by the parser.
+    ///
+    /// A stream that DROPS before a terminal frame is reconnected automatically,
+    /// up to [`MAX_EVENT_RECONNECTS`] times with backoff. Reconnecting replays
+    /// the run's events from the start, so already-delivered frames are
+    /// suppressed by sequence: the caller sees one continuous, gap-free,
+    /// duplicate-free stream across a proxy timeout or a daemon restart. Only
+    /// when reconnection is exhausted does an `Err` item surface.
     pub async fn events(&self, run_id: i64) -> Result<RunEventStream> {
         self.events_with_timeout(run_id, SSE_TIMEOUT).await
     }
@@ -396,23 +448,35 @@ impl Runs<'_> {
         run_id: i64,
         timeout: Duration,
     ) -> Result<RunEventStream> {
-        let resp = self
-            .c
-            .get_stream(&format!("/v1/runs/{run_id}/events"), timeout)
-            .await?;
+        self.events_inner(run_id, timeout, MAX_EVENT_RECONNECTS)
+            .await
+    }
 
-        struct SseState {
-            body: BoxStream<'static, reqwest::Result<bytes::Bytes>>,
-            parser: SseParser,
-            pending: VecDeque<RunEvent>,
-            done: bool,
-        }
+    /// [`Runs::events_with_timeout`] with an explicit reconnect budget.
+    ///
+    /// `run_and_wait` passes 0: it has a strictly better fallback than
+    /// reconnecting (polling `runs().get()`), so a dropped stream should reach
+    /// that at once rather than burning the reconnect ladder's backoff first.
+    pub(crate) async fn events_inner(
+        &self,
+        run_id: i64,
+        timeout: Duration,
+        max_reconnects: u32,
+    ) -> Result<RunEventStream> {
+        let path = format!("/v1/runs/{run_id}/events");
+        let resp = self.c.get_stream(&path, timeout).await?;
+        let opener = self.c.stream_opener(&path, timeout);
 
         let state = SseState {
             body: resp.bytes_stream().boxed(),
             parser: SseParser::new(),
             pending: VecDeque::new(),
             done: false,
+            opener,
+            delivered: 0,
+            seen: 0,
+            reconnects: 0,
+            max_reconnects,
         };
 
         let stream = futures_util::stream::unfold(state, |mut st| async move {
@@ -423,6 +487,7 @@ impl Runs<'_> {
                         st.done = true;
                         st.pending.clear();
                     }
+                    st.delivered += 1;
                     return Some((Ok(ev), st));
                 }
                 if st.done {
@@ -433,19 +498,86 @@ impl Runs<'_> {
                         let mut payloads = Vec::new();
                         st.parser.feed(&chunk, &mut payloads);
                         for p in payloads {
+                            st.seen += 1;
+                            // Suppress frames this caller already received on an
+                            // earlier connection.
+                            if st.seen <= st.delivered {
+                                continue;
+                            }
                             st.pending.push_back(RunEvent::parse(&p));
                         }
                     }
-                    Some(Err(e)) => {
-                        st.done = true;
-                        return Some((Err(WritError::from(e)), st));
-                    }
-                    None => return None,
+                    // A transport error OR a clean end without a terminal frame
+                    // are the same thing: the run is still going and the
+                    // connection went away. Reconnect and replay.
+                    Some(Err(e)) => match reconnect(&mut st).await {
+                        Ok(()) => continue,
+                        Err(_) => {
+                            st.done = true;
+                            return Some((Err(WritError::from(e)), st));
+                        }
+                    },
+                    None => match reconnect(&mut st).await {
+                        Ok(()) => continue,
+                        Err(Some(e)) => {
+                            st.done = true;
+                            return Some((Err(e), st));
+                        }
+                        // Reconnects exhausted with nothing to report: the
+                        // stream simply ends.
+                        Err(None) => return None,
+                    },
                 }
             }
         })
         .boxed();
         Ok(stream)
+    }
+}
+
+/// How many times [`Runs::events`] transparently reconnects a dropped stream
+/// before the error surfaces.
+pub const MAX_EVENT_RECONNECTS: u32 = 5;
+
+/// Live state of one (reconnectable) run-event stream.
+struct SseState {
+    body: BoxStream<'static, reqwest::Result<bytes::Bytes>>,
+    parser: SseParser,
+    pending: VecDeque<RunEvent>,
+    done: bool,
+    /// Re-opens the endpoint after a pre-terminal drop.
+    opener: crate::client::StreamOpener,
+    /// Frames already handed to the caller. The daemon has no Last-Event-ID
+    /// lane, so resumption is client-side: replay the stream and skip what we
+    /// have already delivered.
+    delivered: usize,
+    /// Frames seen on the CURRENT connection.
+    seen: usize,
+    reconnects: u32,
+    max_reconnects: u32,
+}
+
+/// Re-open the stream after a pre-terminal drop.
+///
+/// `Ok(())` means the caller should keep reading. `Err(e)` means reconnection is
+/// exhausted (or was never allowed): `Some(err)` carries a reason worth
+/// surfacing, `None` means end the stream quietly.
+async fn reconnect(st: &mut SseState) -> std::result::Result<(), Option<WritError>> {
+    if st.reconnects >= st.max_reconnects {
+        return Err(None);
+    }
+    st.reconnects += 1;
+    tokio::time::sleep(crate::retry::RetryPolicy::default().backoff(st.reconnects)).await;
+    match st.opener.open().await {
+        Ok(resp) => {
+            st.body = resp.bytes_stream().boxed();
+            st.parser = SseParser::new();
+            // The replay starts from frame 0 again; `delivered` is what makes
+            // the already-seen prefix invisible to the caller.
+            st.seen = 0;
+            Ok(())
+        }
+        Err(e) => Err(Some(e)),
     }
 }
 
@@ -522,14 +654,39 @@ impl Monitors<'_> {
         self.c.get_json("/v1/monitors/capacity", &[]).await
     }
 
-    /// `GET /v1/changes/recent` — cross-monitor recent content changes.
-    pub async fn recent_changes(&self) -> Result<Page<Value>> {
-        self.recent_changes_with(&[]).await
+    /// `GET /v1/changes/recent` — cross-monitor recent content changes,
+    /// newest-first.
+    pub async fn recent_changes(&self) -> Result<Page<RecentChange>> {
+        self.recent_changes_with(&ChangeListOptions::default())
+            .await
     }
 
-    /// `GET /v1/changes/recent` with `limit`.
-    pub async fn recent_changes_with(&self, query: &[(&str, &str)]) -> Result<Page<Value>> {
-        self.c.get_json("/v1/changes/recent", query).await
+    /// `GET /v1/changes/recent` with a page size and/or keyset cursor.
+    ///
+    /// Without `since` this is the newest-first browsing view. Setting it
+    /// switches the daemon to an oldest-first keyset walk returning only what
+    /// was detected after that point. Prefer that for polling: newest-first plus
+    /// a limit silently drops changes whenever more than `limit` of them land
+    /// between two polls. For a continuous feed use [`Monitors::watch`].
+    pub async fn recent_changes_with(
+        &self,
+        opts: &ChangeListOptions,
+    ) -> Result<Page<RecentChange>> {
+        let owned = opts.query();
+        let query: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        self.c.get_json("/v1/changes/recent", &query).await
+    }
+
+    /// Stream detected changes across ALL monitors on the LOCAL daemon.
+    ///
+    /// Identical semantics to `cloud.monitors().watch()` — same cursor, same
+    /// options, same delivery guarantees — so a program can move between venues
+    /// by changing which handle it watches. See [`crate::watch_changes`] for why
+    /// hand-rolled polling of this feed loses changes.
+    pub fn watch(&self, opts: WatchOptions) -> impl Stream<Item = Result<RecentChange>> + '_ {
+        crate::watch_changes(opts, move |o| async move {
+            Ok(self.recent_changes_with(&o).await?.data)
+        })
     }
 }
 
@@ -1164,6 +1321,150 @@ impl Crawl<'_> {
     pub async fn cancel(&self, id: i64) -> Result<CrawlCancel> {
         self.c
             .send_json(Method::POST, &format!("/v1/crawl/{id}/cancel"), &[], None)
+            .await
+    }
+
+    // -- saved crawls (the callable crawl API) -------------------------------
+    //
+    // A crawl row is one RUN and its id dies with that run. A SAVED crawl owns the
+    // settings under a stable slug, so it can be re-run with exactly those settings
+    // and — with `max_age` — answered from the data it already collected.
+
+    /// `GET /v1/crawl/definitions` — newest-first saved crawls. Not a [`Page`]: the
+    /// daemon answers `{definitions: [...]}`.
+    pub async fn saved(&self, limit: Option<i64>) -> Result<CrawlDefinitionList> {
+        let limit_str = limit.map(|n| n.to_string());
+        let mut query: Vec<(&str, &str)> = Vec::new();
+        if let Some(limit) = &limit_str {
+            query.push(("limit", limit.as_str()));
+        }
+        self.c.get_json("/v1/crawl/definitions", &query).await
+    }
+
+    /// `POST /v1/crawl/definitions` — save a crawl configuration so it becomes callable
+    /// and re-runnable.
+    ///
+    /// Set exactly one of [`SaveCrawlParams::config`] / [`SaveCrawlParams::from_crawl_id`].
+    /// Prefer `from_crawl_id` when capturing an existing crawl: its status view does not
+    /// echo every knob it ran with (politeness, shard sizing, path filters), so a config
+    /// rebuilt client-side would silently substitute defaults and save a crawl that behaves
+    /// differently from the one you pointed at.
+    pub async fn save(&self, params: SaveCrawlParams) -> Result<CrawlDefinition> {
+        if params.config.is_none() && params.from_crawl_id.is_none() {
+            // Fail here rather than POST a definition with no settings, which would only
+            // break later at run time, far from the mistake.
+            return Err(WritError::Connection(
+                "crawl().save() needs either `config` or `from_crawl_id`".into(),
+            ));
+        }
+        let body = serde_json::to_value(&params)
+            .map_err(|e| WritError::Connection(format!("serializing saved crawl: {e}")))?;
+        self.c
+            .send_json(Method::POST, "/v1/crawl/definitions", &[], Some(&body))
+            .await
+    }
+
+    /// `GET /v1/crawl/definitions/:ref` — one saved crawl by id or slug.
+    pub async fn saved_get(&self, reference: &str) -> Result<CrawlDefinition> {
+        self.c
+            .get_json(&format!("/v1/crawl/definitions/{reference}"), &[])
+            .await
+    }
+
+    /// `PATCH /v1/crawl/definitions/:ref` — sparse update; omitted fields stay untouched.
+    pub async fn saved_update(
+        &self,
+        reference: &str,
+        params: SaveCrawlParams,
+    ) -> Result<CrawlDefinition> {
+        let body = serde_json::to_value(&params)
+            .map_err(|e| WritError::Connection(format!("serializing saved crawl: {e}")))?;
+        self.c
+            .send_json(
+                Method::PATCH,
+                &format!("/v1/crawl/definitions/{reference}"),
+                &[],
+                Some(&body),
+            )
+            .await
+    }
+
+    /// `DELETE /v1/crawl/definitions/:ref` — remove a saved crawl. Its past runs and their
+    /// collected data survive; only the reusable configuration goes away.
+    pub async fn saved_delete(&self, reference: &str) -> Result<()> {
+        self.c
+            .send_no_content(
+                Method::DELETE,
+                &format!("/v1/crawl/definitions/{reference}"),
+                &[],
+                None,
+            )
+            .await
+    }
+
+    /// `POST /v1/crawl/definitions/:ref/run` — run a saved crawl, reusing its data when
+    /// `max_age` allows.
+    ///
+    /// `max_age` is a freshness contract, not a cache flag: "data collected within this
+    /// window is acceptable, otherwise go get it again". On a hit the previous run's rows
+    /// come back inline with `_cache.hit == true` and nothing is crawled or metered; a zero
+    /// window always re-crawls.
+    ///
+    /// A cold call returns a dispatched crawl (`cached == false`, `data` empty) — a
+    /// whole-site crawl outlives an HTTP request, so poll `status_url` or set `wait`. With
+    /// `wait` an overrun is [`WritError::RunTimeout`] carrying the crawl id, so work already
+    /// started stays collectable rather than being blindly re-run.
+    pub async fn run_saved(
+        &self,
+        reference: &str,
+        params: RunSavedCrawlParams,
+    ) -> Result<SavedCrawlRun> {
+        let mut body = serde_json::Map::new();
+        if let Some(max_age) = params.max_age {
+            body.insert("max_age".into(), json!(max_age.as_secs()));
+        }
+        if params.wait {
+            body.insert("wait".into(), json!(true));
+            if let Some(timeout) = params.timeout {
+                body.insert("timeout".into(), json!(timeout.as_secs().max(1)));
+            }
+        }
+        if let Some(limit) = params.limit {
+            body.insert("limit".into(), json!(limit));
+        }
+        let body = Value::Object(body);
+        let path = format!("/v1/crawl/definitions/{reference}/run");
+
+        // 504 is a documented, RECOVERABLE outcome of a WAITING call, so it is decoded as a
+        // body rather than mapped to a generic API error — which would throw away the crawl
+        // id, the only thing that makes it recoverable. Without `wait` there is nothing to
+        // time out, so a 504 there is a real gateway failure and stays one.
+        let allowed: &[u16] = if params.wait { &[504] } else { &[] };
+        let out: SavedCrawlRun = self
+            .c
+            .send_json_allowing(Method::POST, &path, &[], Some(&body), allowed)
+            .await?;
+        if let Some(crawl_id) = out.crawl_id.filter(|_| out.retryable) {
+            return Err(WritError::RunTimeout {
+                run_id: crawl_id,
+                status_url: out.status_url.clone(),
+                events_url: None,
+            });
+        }
+        Ok(out)
+    }
+
+    /// `GET /v1/crawl/definitions/:ref/data` — the rows a saved crawl already collected on
+    /// its latest completed run. A pure read at any age; never starts a crawl. Use
+    /// [`Self::run_saved`] with `max_age` when you need a recency guarantee instead.
+    pub async fn saved_data(&self, reference: &str, limit: Option<i64>) -> Result<SavedCrawlData> {
+        let limit_str = limit.map(|n| n.to_string());
+        let mut query: Vec<(&str, &str)> = Vec::new();
+        if let Some(limit) = &limit_str {
+            query.push(("limit", limit.as_str()));
+        }
+        self.c
+            .get_json(&format!("/v1/crawl/definitions/{reference}/data"), &query)
             .await
     }
 }

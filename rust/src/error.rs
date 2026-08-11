@@ -75,7 +75,7 @@ pub enum WritError {
         body: Value,
     },
     /// The tenant's crawl-page allotment is spent and the wallet can't cover the
-    /// call — Writ Cloud answered `402` (any code other than `api_key_required`).
+    /// call — Writ Cloud answered `402` with no plan ceiling attached.
     #[error("writ insufficient credits [{code}]: {message}")]
     InsufficientCredits {
         /// HTTP status (402).
@@ -85,6 +85,32 @@ pub enum WritError {
         /// Human message.
         message: String,
         /// The parsed JSON body, or the raw text as a JSON string.
+        body: Value,
+    },
+    /// A PLAN CEILING was hit, not a wallet balance — Writ Cloud answered `402`
+    /// from `services.plan_enforcer.PlanLimitDenied`. Codes include
+    /// `interval_too_short`, `target_limit_js`/`_html`, `concurrent_browsers`,
+    /// `crawl_concurrency`, `crawl_pages_exhausted` and friends.
+    ///
+    /// Deliberately NOT [`WritError::InsufficientCredits`]: topping up credits
+    /// does not clear a plan ceiling, and saying otherwise sends the caller to
+    /// the wrong fix. The two are told apart structurally — a plan denial always
+    /// reports the ceiling it hit as a numeric `limit`.
+    #[error("writ plan limit [{code}]: {message}")]
+    PlanLimit {
+        /// HTTP status (402).
+        status: u16,
+        /// Stable machine code naming which ceiling was hit.
+        code: String,
+        /// Human message, which names the limit in words.
+        message: String,
+        /// Present usage, per the server.
+        current: i64,
+        /// The ceiling that was hit.
+        limit: i64,
+        /// The plan that would clear it, when the server named one.
+        upgrade_hint: Option<String>,
+        /// The parsed JSON body.
         body: Value,
     },
     /// A `run(..., wait)` call whose SERVER-side budget expired (HTTP 504).
@@ -105,6 +131,17 @@ pub enum WritError {
         status_url: Option<String>,
         /// Live SSE stream for this run.
         events_url: Option<String>,
+    },
+    /// A `start_and_wait` build whose CLIENT-side deadline passed (HTTP is not
+    /// involved — the build is asynchronous by design).
+    ///
+    /// NOT a failure of the build: it is still running and `build_id` still
+    /// addresses it — poll `builds().get(build_id)`. Carrying the id here is the
+    /// whole point, so a timeout never loses the work that is still in flight.
+    #[error("writ build {build_id} did not finish within the deadline (still running)")]
+    BuildTimeout {
+        /// The still-running build.
+        build_id: i64,
     },
     /// Network failure / timeout / undecodable response (daemon down mid-session).
     #[error("writ connection error: {0}")]
