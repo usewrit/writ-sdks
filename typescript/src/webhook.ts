@@ -20,11 +20,8 @@
  */
 
 import { WritError } from "./errors.js";
+import { warmWebCrypto } from "./webcrypto.js";
 
-// Type-only: this tsconfig has `lib: ES2022` with no DOM, so the DOM `SubtleCrypto` name does
-// not exist here. Erased at build, so a browser bundle never sees `node:crypto`.
-import type { webcrypto } from "node:crypto";
-type Subtle = webcrypto.SubtleCrypto;
 
 export const WEBHOOK_SIGNATURE_V1_HEADER = "x-writ-signature-v1";
 export const WEBHOOK_SIGNATURE_HEADER = "x-writ-signature";
@@ -95,33 +92,8 @@ function headerValue(headers: HeaderSource, name: string): string | null {
 
 const encoder = new TextEncoder();
 
-/**
- * Resolve Web Crypto's `subtle`, cached after the first success.
- *
- * `globalThis.crypto` is a global in browsers, Deno, workers and **Node 19+**.
- * On Node 18 — which this package's `engines` still supports — Web Crypto
- * exists but ONLY as `node:crypto`'s `webcrypto`, so reading the global there
- * finds nothing and every webhook call failed. The `node:crypto` import is
- * dynamic and guarded so a browser bundle, where it does not resolve, simply
- * falls through instead of failing to build.
- */
-let subtleOnce: Promise<Subtle | undefined> | undefined;
-function resolveSubtle(): Promise<Subtle | undefined> {
-  subtleOnce ??= (async () => {
-    const fromGlobal = globalThis.crypto?.subtle;
-    if (fromGlobal) return fromGlobal;
-    try {
-      const { webcrypto } = await import("node:crypto");
-      return webcrypto?.subtle;
-    } catch {
-      return undefined;
-    }
-  })();
-  return subtleOnce;
-}
-
 async function hmacHex(secret: string, message: Uint8Array): Promise<string> {
-  const subtle = await resolveSubtle();
+  const subtle = (await warmWebCrypto())?.subtle;
   if (!subtle) {
     throw new WritError(
       "Web Crypto is unavailable — webhook verification needs SubtleCrypto, from " +

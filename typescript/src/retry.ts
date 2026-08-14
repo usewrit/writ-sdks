@@ -1,3 +1,4 @@
+import { webCryptoSync } from "./webcrypto.js";
 /**
  * Transient-failure retry shared by the local and cloud transports.
  *
@@ -163,10 +164,39 @@ export async function withRetry(
  * executing twice.
  */
 export function newIdempotencyKey(): string {
-  const c = globalThis.crypto;
+  const c = webCryptoSync();
   if (c?.randomUUID) return `writ-${c.randomUUID()}`;
-  const bytes = new Uint8Array(16);
-  if (c?.getRandomValues) c.getRandomValues(bytes);
-  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  return `writ-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  if (c?.getRandomValues) {
+    const bytes = c.getRandomValues(new Uint8Array(16));
+    return `writ-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return `writ-${lastResortKey()}`;
+}
+
+/**
+ * Used only when no Web Crypto is reachable synchronously — Node 18 before
+ * anything has awaited `warmWebCrypto`, or a browser in an insecure context.
+ *
+ * `Math.random` alone was not good enough here. Its generator carries roughly
+ * 48 bits of state however many bytes you draw from it, so 16 "random" bytes do
+ * not buy 128 bits and collisions become plausible in the millions of keys — and
+ * a collision is the one failure this key exists to prevent, since the server
+ * would answer a fresh request with a previous reply. Mixing in the clock and a
+ * per-process counter makes a repeat impossible within a process and unlikely
+ * across processes, which is what idempotency actually needs.
+ *
+ * It is NOT unpredictable, and does not need to be: the key only has to be
+ * unique within the caller's own account. Anything that awaits `warmWebCrypto`
+ * first — every request this SDK issues — gets a CSPRNG key instead.
+ */
+let keyCounter = 0;
+function lastResortKey(): string {
+  const counter = (++keyCounter).toString(36);
+  const now = Date.now().toString(36);
+  const noise = Array.from({ length: 4 }, () =>
+    Math.floor(Math.random() * 0x100000000)
+      .toString(36)
+      .padStart(7, "0"),
+  ).join("");
+  return `${now}-${counter}-${noise}`;
 }

@@ -34,6 +34,7 @@ import {
 import { DEFAULT_RETRY_POLICY, isSafeMethod, newIdempotencyKey, sleep, withRetry } from "./retry.js";
 import type { RetryPolicy } from "./retry.js";
 import type { ChangeListParams, CrawlJob, CrawlStartBody, RecentChange } from "./types.js";
+import { warmWebCrypto } from "./webcrypto.js";
 
 const DEFAULT_CLOUD_URL = "https://api.usewrit.app";
 const CLIENT_ID_HEADER = "X-Writ-Client-Id";
@@ -1053,6 +1054,9 @@ export class CloudApi {
     // repeating an unsafe method safe rather than duplicative.
     const policy: RetryPolicy = { ...this.#retry };
     if (!isSafeMethod(method)) {
+      // Warm Web Crypto first: on Node 18 it is not a global, and without this
+      // the key would come from the non-CSPRNG last resort in `retry.ts`.
+      await warmWebCrypto();
       const key = newIdempotencyKey();
       if (key) headers["idempotency-key"] = key;
       else policy.retryUnsafeMethods = false;
