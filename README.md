@@ -108,11 +108,6 @@ cursor as the hosted tier, so retried writes cannot duplicate and
 Identical code, default base URL — set `WRIT_API_KEY` and go. Without a key,
 cloud calls fall back to a free daily-capped *keyless* tier.
 
-> **Writ Cloud has not launched yet.** `https://api.usewrit.app` does not
-> resolve, so target 3 currently fails with a connection error. **Targets 1 and 2
-> work today** — the local agent and a self-hosted coordinator are both fully
-> usable right now.
-
 > **Keyless calls send a persistent id.** Enforcing a free daily cap requires
 > recognising the caller across runs, so the first *keyless* cloud call mints a
 > random id at `~/.writ/client_id` and sends it thereafter. Local usage and
