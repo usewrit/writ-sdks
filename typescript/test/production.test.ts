@@ -5,6 +5,9 @@ import type { AddressInfo } from "node:net";
 import { CloudApi, WritAgent, signWebhookRequest, verifyWebhook } from "../src/index.js";
 import { WritWebhookVerificationError } from "../src/webhook.js";
 import { autoPage } from "../src/types.js";
+// `globalThis.crypto` is only a global from Node 19; these tests must also run on Node 18.
+import { webcrypto } from "node:crypto";
+const subtle = webcrypto.subtle;
 
 /** Spin up a throwaway HTTP server and hand back its base URL. */
 async function serve(
@@ -262,14 +265,14 @@ describe("verifyWebhook", () => {
   const body = JSON.stringify({ event: "change_detected", target: { id: 42 } });
 
   async function v1Headers(ts: string): Promise<Record<string, string>> {
-    const key = await crypto.subtle.importKey(
+    const key = await subtle.importKey(
       "raw",
       new TextEncoder().encode(secret),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["sign"],
     );
-    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
+    const sig = await subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
     const hex = Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
     return { "x-writ-timestamp": ts, "x-writ-signature-v1": `sha256=${hex}` };
   }
@@ -298,14 +301,14 @@ describe("verifyWebhook", () => {
   });
 
   it("refuses a body-only signature unless explicitly allowed", async () => {
-    const key = await crypto.subtle.importKey(
+    const key = await subtle.importKey(
       "raw",
       new TextEncoder().encode(secret),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["sign"],
     );
-    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+    const sig = await subtle.sign("HMAC", key, new TextEncoder().encode(body));
     const hex = Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
     const headers = { "x-writ-signature": `sha256=${hex}` };
 
