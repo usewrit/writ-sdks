@@ -154,9 +154,5 @@ Shared behaviour, identical in every language and covered by tests:
 
 ### Known limitations
 
-- **Writ Cloud is not live.** `https://api.usewrit.app`, the default cloud base
-  URL, does not resolve yet. The local daemon surface is fully usable; `.cloud`
-  calls will fail until the service launches or `WRIT_CLOUD_URL` is pointed
-  elsewhere.
 - OAuth, MCP, OpenAI-compatible and AI-assist surfaces are out of scope for
   1.0.x.
