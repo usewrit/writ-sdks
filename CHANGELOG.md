@@ -6,6 +6,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-08-14 — TypeScript only
+
+### Fixed
+
+- **Webhook signing and verification threw on Node 18**, which `engines` declares
+  as supported. `globalThis.crypto` only became a global in **Node 19**; on Node 18
+  Web Crypto exists solely as `node:crypto`'s `webcrypto`, so every call into
+  `verifyWebhook` / `signWebhookRequest` failed with "Web Crypto is unavailable" —
+  and the thrown message itself said "Node 18+", pointing away from the cause.
+
+  Web Crypto is now reached through a single seam (`src/webcrypto.ts`) that falls
+  back to `node:crypto` when the global is absent. The import is dynamic and
+  guarded, so bundles for browsers and workers — where a static `node:` import
+  fails to resolve — are unaffected.
+
+  Verified on Node 18, 20, 22 and 24: on 18 `globalThis.crypto` is `undefined` and
+  signing, v1 verification and tamper rejection all pass.
+
 ## [1.1.0] — 2026-08-11
 
 1.0.0 shipped the core: discovery, workflows, runs with SSE, data, monitors,
