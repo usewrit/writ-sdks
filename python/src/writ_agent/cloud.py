@@ -953,6 +953,30 @@ class Cloud(_CloudConfig):
         self._require_key("Crawl status")
         return self._send("GET", f"/api/crawl/{crawl_id}")
 
+    def crawl_files(self, crawl_id: int, *, limit: Optional[int] = None) -> dict[str, Any]:
+        """The ORIGINAL documents a crawl captured as stored files — PDFs, office
+        docs, images, CSVs the crawler reached. The crawl's dataset holds the
+        extracted text; each entry here carries the file metadata plus a
+        short-TTL ``download_url`` fetchable with no further auth (stream it
+        straight to disk). Requires an API key."""
+        self._require_key("Crawl files")
+        qs = f"?limit={int(limit)}" if limit is not None else ""
+        return self._send("GET", f"/api/crawl/{crawl_id}/files{qs}")
+
+    def saved_crawl_files(self, ref: "int | str", *, limit: Optional[int] = None,
+                          runs: Optional[int] = None) -> dict[str, Any]:
+        """Documents captured by a SAVED crawl's recent completed run(s) — by
+        default just the latest run (the current version of every document);
+        raise ``runs`` to also reach older versions from earlier runs."""
+        self._require_key("Crawl files")
+        params = []
+        if limit is not None:
+            params.append(f"limit={int(limit)}")
+        if runs is not None:
+            params.append(f"runs={int(runs)}")
+        qs = ("?" + "&".join(params)) if params else ""
+        return self._send("GET", f"/api/crawl/definitions/{ref}/files{qs}")
+
 
     def crawl_keyless(self, url: str, *, search: Optional[str] = None,
                       limit: Optional[int] = None) -> dict[str, Any]:
@@ -1074,6 +1098,24 @@ class AsyncCloud(_CloudConfig):
     async def crawl_status(self, crawl_id: int) -> dict[str, Any]:
         self._require_key("Crawl status")
         return await self._send("GET", f"/api/crawl/{crawl_id}")
+
+    async def crawl_files(self, crawl_id: int, *, limit: Optional[int] = None) -> dict[str, Any]:
+        """Async twin of :meth:`Cloud.crawl_files`."""
+        self._require_key("Crawl files")
+        qs = f"?limit={int(limit)}" if limit is not None else ""
+        return await self._send("GET", f"/api/crawl/{crawl_id}/files{qs}")
+
+    async def saved_crawl_files(self, ref: "int | str", *, limit: Optional[int] = None,
+                                runs: Optional[int] = None) -> dict[str, Any]:
+        """Async twin of :meth:`Cloud.saved_crawl_files`."""
+        self._require_key("Crawl files")
+        params = []
+        if limit is not None:
+            params.append(f"limit={int(limit)}")
+        if runs is not None:
+            params.append(f"runs={int(runs)}")
+        qs = ("?" + "&".join(params)) if params else ""
+        return await self._send("GET", f"/api/crawl/definitions/{ref}/files{qs}")
 
     async def crawl_keyless(self, url: str, *, search: Optional[str] = None,
                             limit: Optional[int] = None) -> dict[str, Any]:

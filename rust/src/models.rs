@@ -694,6 +694,53 @@ impl std::fmt::Display for Brand {
     }
 }
 
+/// One ORIGINAL document a crawl captured as a stored file — a PDF, office
+/// document, image or CSV the crawler reached. The crawl's dataset holds the
+/// EXTRACTED TEXT; this is the source file it came from.
+///
+/// `download_url` is a short-TTL signed GET: fetch it with no further auth and
+/// stream it straight to disk. `version` counts captures of `source_url` whose
+/// bytes changed across re-crawls (1 = never changed), and `crawl_ids` lists
+/// every crawl referencing this exact version — re-crawl dedupe links one file
+/// to many crawls rather than storing it again.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrawlFileEntry {
+    pub file_id: String,
+    pub filename: String,
+    /// `None` when the server recorded no content type — distinct from `""`.
+    pub content_type: Option<String>,
+    pub size: i64,
+    pub version: i64,
+    pub source_url: Option<String>,
+    pub crawl_ids: Vec<i64>,
+    pub created_at: Option<String>,
+    pub download_url: Option<String>,
+}
+
+/// The documents one crawl run captured (`GET /api/crawl/{id}/files`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrawlFilesResult {
+    pub crawl_id: i64,
+    pub files: Vec<CrawlFileEntry>,
+    pub total: i64,
+}
+
+/// Documents from a saved crawl's recent run(s)
+/// (`GET /api/crawl/definitions/{ref}/files`).
+///
+/// `definition` stays an untyped value: this crate does not otherwise model
+/// saved-crawl definitions, and inventing a partial struct would silently drop
+/// fields the API adds later.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedCrawlFilesResult {
+    pub definition: serde_json::Value,
+    pub files: Vec<CrawlFileEntry>,
+    pub total: i64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CrawlJob {

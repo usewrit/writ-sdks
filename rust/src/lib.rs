@@ -65,12 +65,13 @@ pub use error::{Result, WritError};
 pub use models::{file_slots, output_files};
 pub use models::{
     AgentStatus, ApiKey, Automation, Brand, CacheStamp, CancelOutcome, CrawlCancel, CrawlDataTable,
-    CrawlDefinition, CrawlDefinitionList, CrawlJob, CrawlList, CrawlStartParams, Dataset,
-    DatasetFormat, DatasetList, DatasetMeta, DatasetRef, DatasetSearchHit, DatasetSearchResult,
-    Extra, Extractor, FileSlot, Health, Monitor, MonitorHistory, OutputFile, Persona, RunCompleted,
-    RunData, RunEvent, RunFeedItem, RunOutcome, RunResults, RunSavedCrawlParams, RunStarted,
-    SaveCrawlParams, SavedCrawlData, SavedCrawlRun, SecretMeta, Selector, StoredFile, VaultStatus,
-    Workflow, WsTicket,
+    CrawlDefinition, CrawlDefinitionList, CrawlFileEntry, CrawlFilesResult, CrawlJob, CrawlList,
+    CrawlStartParams, Dataset, DatasetFormat, DatasetList, DatasetMeta, DatasetRef,
+    DatasetSearchHit, DatasetSearchResult, Extra, Extractor, FileSlot, Health, Monitor,
+    MonitorHistory, OutputFile, Persona, RunCompleted, RunData, RunEvent, RunFeedItem, RunOutcome,
+    RunResults, RunSavedCrawlParams, RunStarted, SaveCrawlParams, SavedCrawlData,
+    SavedCrawlFilesResult, SavedCrawlRun, SecretMeta, Selector, StoredFile, VaultStatus, Workflow,
+    WsTicket,
 };
 pub use page::{auto_page, Page, DEFAULT_AUTO_PAGE_SIZE};
 pub use resources::{

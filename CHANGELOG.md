@@ -6,6 +6,33 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-15 — TypeScript, Python, Go, Rust
+
+### Added
+
+- **List the original documents a crawl captured.** A crawl's dataset holds the
+  extracted *text*; these return the source files it came from — PDFs, office
+  documents, images and CSVs the crawler reached. Each entry carries the file
+  metadata plus a short-TTL `download_url` that needs no further auth, so it can be
+  streamed straight to disk.
+  - `crawlFiles` / `crawl_files` / `CrawlFiles` — one crawl run's documents.
+  - `savedCrawlFiles` / `saved_crawl_files` / `SavedCrawlFiles` — a saved crawl's
+    recent completed run(s). The default is the latest run, i.e. the current
+    version of every document; raise `runs` to reach older versions from earlier
+    runs.
+
+  Both require an API key and refuse on the keyless tier **before** any network
+  call. `version` counts captures of a source URL whose bytes changed across
+  re-crawls, and `crawl_ids` lists every crawl referencing that exact version —
+  re-crawl dedupe links one file to many crawls rather than storing it twice.
+
+### Note
+
+- **TypeScript 1.1.1 was never published to npm.** Its Node 18 webhook-crypto fix
+  ships here, so 1.2.0 is the first npm release carrying it. Nothing is lost by
+  skipping 1.1.1.
+
+
 ## [1.1.1] — 2026-08-14 — TypeScript only
 
 ### Fixed

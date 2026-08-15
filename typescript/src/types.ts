@@ -1467,6 +1467,39 @@ export interface CrawlCancelResult extends CrawlJob {
   cancel_requested_now: boolean;
 }
 
+/**
+ * One ORIGINAL document a crawl captured as a stored file (PDF / office doc /
+ * image / CSV). `download_url` is a short-TTL signed GET — fetch it with no
+ * further auth. `version` counts captures of `source_url` whose bytes changed
+ * across re-crawls (1 = never changed); `crawl_ids` lists every crawl that
+ * references this exact version (re-crawl dedupe links, one file → many crawls).
+ */
+export interface CrawlFileEntry {
+  file_id: string;
+  filename: string;
+  content_type: string | null;
+  size: number;
+  version: number;
+  source_url: string | null;
+  crawl_ids: number[];
+  created_at: string | null;
+  download_url: string | null;
+}
+
+/** `GET /api/crawl/:id/files` — the documents one crawl run captured. */
+export interface CrawlFilesResult {
+  crawl_id: number;
+  files: CrawlFileEntry[];
+  total: number;
+}
+
+/** `GET /api/crawl/definitions/:ref/files` — documents from a saved crawl's recent run(s). */
+export interface SavedCrawlFilesResult {
+  definition: Record<string, unknown>;
+  files: CrawlFileEntry[];
+  total: number;
+}
+
 // ---------------------------------------------------------------------------
 // keys — api/v1/keys.rs
 // ---------------------------------------------------------------------------

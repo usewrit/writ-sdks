@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -247,6 +248,114 @@ func (s *CloudService) CrawlStatus(ctx context.Context, id int64) (*CrawlJob, er
 		return nil, err
 	}
 	var out CrawlJob
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("writ: decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// CrawlFileEntry is one ORIGINAL document a crawl captured as a stored file — a
+// PDF, office document, image or CSV the crawler reached. The crawl's dataset
+// holds the EXTRACTED TEXT; this is the source file it came from.
+//
+// DownloadURL is a short-TTL signed GET: fetch it with no further auth and
+// stream it straight to disk. Version counts captures of SourceURL whose bytes
+// changed across re-crawls (1 = never changed), and CrawlIDs lists every crawl
+// referencing this exact version — re-crawl dedupe links one file to many
+// crawls rather than storing it again.
+//
+// The nullable fields are pointers because absent and empty differ here: a
+// document with no recorded source URL is not the same as one recorded at "".
+type CrawlFileEntry struct {
+	FileID      string  `json:"file_id"`
+	Filename    string  `json:"filename"`
+	ContentType *string `json:"content_type"`
+	Size        int64   `json:"size"`
+	Version     int     `json:"version"`
+	SourceURL   *string `json:"source_url"`
+	CrawlIDs    []int64 `json:"crawl_ids"`
+	CreatedAt   *string `json:"created_at"`
+	DownloadURL *string `json:"download_url"`
+}
+
+// CrawlFilesResult is the answer from CrawlFiles — the documents one crawl run
+// captured.
+type CrawlFilesResult struct {
+	CrawlID int64            `json:"crawl_id"`
+	Files   []CrawlFileEntry `json:"files"`
+	Total   int              `json:"total"`
+}
+
+// SavedCrawlFilesResult is the answer from SavedCrawlFiles. Definition is the
+// saved crawl the documents came from, left as a map because this SDK does not
+// otherwise model saved-crawl definitions and inventing a partial struct would
+// silently drop fields the API adds later.
+type SavedCrawlFilesResult struct {
+	Definition map[string]any   `json:"definition"`
+	Files      []CrawlFileEntry `json:"files"`
+	Total      int              `json:"total"`
+}
+
+// CrawlFilesOptions tunes CrawlFiles. Limit is a pointer so leaving it unset
+// lets the server apply its own cap rather than this SDK inventing one.
+type CrawlFilesOptions struct {
+	Limit *int
+}
+
+// SavedCrawlFilesOptions tunes SavedCrawlFiles. Runs reaches back through older
+// completed runs; unset means the latest run only, i.e. the current version of
+// every document.
+type SavedCrawlFilesOptions struct {
+	Limit *int
+	Runs  *int
+}
+
+// CrawlFiles lists the original documents a crawl captured (requires an API
+// key). On the keyless tier it returns *APIKeyRequiredError before any network
+// call.
+func (s *CloudService) CrawlFiles(ctx context.Context, id int64, opts *CrawlFilesOptions) (*CrawlFilesResult, error) {
+	if err := s.requireKey("Crawl files"); err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if opts != nil && opts.Limit != nil {
+		query.Set("limit", strconv.Itoa(*opts.Limit))
+	}
+	data, err := s.sendQuery(ctx, http.MethodGet, fmt.Sprintf("/api/crawl/%d/files", id), nil, query)
+	if err != nil {
+		return nil, err
+	}
+	var out CrawlFilesResult
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("writ: decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// SavedCrawlFiles lists documents captured by a SAVED crawl's recent completed
+// run(s), by id or slug (requires an API key). By default that is the latest
+// run — the current version of every document; raise Options.Runs to also reach
+// older versions from earlier runs.
+func (s *CloudService) SavedCrawlFiles(ctx context.Context, ref string, opts *SavedCrawlFilesOptions) (*SavedCrawlFilesResult, error) {
+	if err := s.requireKey("Crawl files"); err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if opts != nil {
+		if opts.Limit != nil {
+			query.Set("limit", strconv.Itoa(*opts.Limit))
+		}
+		if opts.Runs != nil {
+			query.Set("runs", strconv.Itoa(*opts.Runs))
+		}
+	}
+	// PathEscape: a saved crawl is addressable by slug as well as id.
+	path := "/api/crawl/definitions/" + url.PathEscape(ref) + "/files"
+	data, err := s.sendQuery(ctx, http.MethodGet, path, nil, query)
+	if err != nil {
+		return nil, err
+	}
+	var out SavedCrawlFilesResult
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("writ: decode response: %w", err)
 	}

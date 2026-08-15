@@ -40,7 +40,7 @@ use serde_json::{Map, Value};
 use crate::client::USER_AGENT;
 use crate::discovery::env_var;
 use crate::error::{code_for_status, Result, WritError};
-use crate::models::{CrawlJob, CrawlStartParams};
+use crate::models::{CrawlFilesResult, CrawlJob, CrawlStartParams, SavedCrawlFilesResult};
 use crate::retry::{
     is_safe_method, new_idempotency_key, retry_after, should_retry_status, RetryPolicy,
 };
@@ -396,6 +396,65 @@ impl CloudClient {
             .send(Method::GET, &format!("/api/crawl/{id}"), None)
             .await?;
         decode_crawl_job(raw)
+    }
+
+    /// The ORIGINAL documents a crawl captured as stored files — PDFs, office
+    /// documents, images, CSVs the crawler reached (requires an API key).
+    ///
+    /// The crawl's dataset holds the extracted text; each entry here carries the
+    /// file metadata plus a short-TTL `download_url` fetchable with no further
+    /// auth. `limit` left as `None` lets the server apply its own cap.
+    ///
+    /// `GET /api/crawl/{id}/files`.
+    pub async fn crawl_files(&self, id: i64, limit: Option<i64>) -> Result<CrawlFilesResult> {
+        if self.inner.api_key.is_none() {
+            return Err(api_key_required(
+                "Crawl files needs an API key — set api_key or WRIT_API_KEY.",
+            ));
+        }
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        let raw = self
+            .send_query(Method::GET, &format!("/api/crawl/{id}/files"), None, &query)
+            .await?;
+        serde_json::from_value(raw)
+            .map_err(|e| WritError::Connection(format!("decoding crawl files: {e}")))
+    }
+
+    /// Documents captured by a SAVED crawl's recent completed run(s), addressed
+    /// by id or slug (requires an API key).
+    ///
+    /// By default that is the latest run — the current version of every
+    /// document; raise `runs` to also reach older versions from earlier runs.
+    ///
+    /// `GET /api/crawl/definitions/{reference}/files`.
+    pub async fn saved_crawl_files(
+        &self,
+        reference: &str,
+        limit: Option<i64>,
+        runs: Option<i64>,
+    ) -> Result<SavedCrawlFilesResult> {
+        if self.inner.api_key.is_none() {
+            return Err(api_key_required(
+                "Crawl files needs an API key — set api_key or WRIT_API_KEY.",
+            ));
+        }
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        if let Some(runs) = runs {
+            query.push(("runs", runs.to_string()));
+        }
+        let path = format!(
+            "/api/crawl/definitions/{}/files",
+            encode_path_segment(reference)
+        );
+        let raw = self.send_query(Method::GET, &path, None, &query).await?;
+        serde_json::from_value(raw)
+            .map_err(|e| WritError::Connection(format!("decoding saved crawl files: {e}")))
     }
 
     /// Cloud monitors — the same verbs as [`WritAgent::monitors`] on the local
@@ -1716,6 +1775,27 @@ fn cloud_error_from(status: u16, raw: &str) -> WritError {
 }
 
 // --- normalization ----------------------------------------------------------
+
+/// Percent-encode one path segment.
+///
+/// A saved crawl is addressable by SLUG as well as by id, and a slug is
+/// interpolated straight into the request path. Without this, a `?` or `#` in a
+/// slug would be read as the start of the query or fragment and silently
+/// address a different resource, and a space would produce an invalid URL.
+/// Unreserved characters (RFC 3986 §2.3) pass through untouched, so an ordinary
+/// slug is unchanged.
+fn encode_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
 
 fn decode_crawl_job(raw: Value) -> Result<CrawlJob> {
     serde_json::from_value(raw)

@@ -645,3 +645,116 @@ async fn payment_required_splits_plan_limit_from_credits() {
         "a wallet 402 must stay InsufficientCredits, got {err2:?}"
     );
 }
+
+// Crawl files: the keyless tier must refuse BEFORE any network call, exactly as
+// the other metered verbs do — a free-tier caller should not spend a round trip
+// to be told no.
+#[tokio::test]
+async fn keyless_crawl_files_refuses_without_a_request() {
+    let server = StubServer::start().await;
+    let cloud = keyless_for(&server);
+
+    let err = cloud.crawl_files(42, None).await.unwrap_err();
+    assert!(matches!(err, WritError::ApiKeyRequired { .. }), "{err:?}");
+    let err = cloud
+        .saved_crawl_files("weekly-docs", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, WritError::ApiKeyRequired { .. }), "{err:?}");
+
+    assert!(
+        server.requests().is_empty(),
+        "no network call may be made when crawl files is refused client-side"
+    );
+}
+
+// Metered: path, query, and the nullable fields. `content_type` is Option
+// precisely so a JSON null survives as absent rather than collapsing to "" —
+// assert that, since it is the reason for the Option.
+#[tokio::test]
+async fn metered_crawl_files_sends_limit_and_parses_nulls() {
+    let server = StubServer::start().await;
+    server.route(
+        "GET",
+        "/api/crawl/42/files",
+        json_reply(
+            200,
+            json!({
+                "crawl_id": 42,
+                "total": 1,
+                "files": [{
+                    "file_id": "file_a",
+                    "filename": "report.pdf",
+                    "content_type": null,
+                    "size": 1024,
+                    "version": 2,
+                    "source_url": "https://example.com/report.pdf",
+                    "crawl_ids": [41, 42],
+                    "created_at": "2026-08-15T00:00:00Z",
+                    "download_url": "https://dl.example/x"
+                }]
+            }),
+        ),
+    );
+    let cloud = metered_for(&server, "wt_secret");
+
+    let res = cloud.crawl_files(42, Some(10)).await.unwrap();
+    assert_eq!(res.crawl_id, 42);
+    assert_eq!(res.total, 1);
+    let file = &res.files[0];
+    assert!(file.content_type.is_none(), "a JSON null must stay absent");
+    assert_eq!(
+        file.source_url.as_deref(),
+        Some("https://example.com/report.pdf")
+    );
+    assert_eq!(file.version, 2);
+    assert_eq!(file.crawl_ids, vec![41, 42]);
+
+    let req = &server.requests()[0];
+    assert_eq!(req.path, "/api/crawl/42/files");
+    assert_eq!(req.query.as_deref(), Some("limit=10"));
+}
+
+// A saved crawl is addressable by SLUG, so the reference is percent-encoded
+// rather than concatenated — otherwise a `?` or `#` in a slug would silently
+// address something else. And an unset option must emit no query at all:
+// "?runs=" is not the same as omitting runs.
+#[tokio::test]
+async fn saved_crawl_files_encodes_the_reference_and_omits_unset_options() {
+    let server = StubServer::start().await;
+    server.route(
+        "GET",
+        "/api/crawl/definitions/weekly%20docs%3Fx/files",
+        json_reply(
+            200,
+            json!({ "definition": {"slug": "weekly docs?x"}, "total": 0, "files": [] }),
+        ),
+    );
+    server.route(
+        "GET",
+        "/api/crawl/definitions/weekly-docs/files",
+        json_reply(
+            200,
+            json!({ "definition": {"slug": "weekly-docs"}, "total": 0, "files": [] }),
+        ),
+    );
+    let cloud = metered_for(&server, "wt_secret");
+
+    cloud
+        .saved_crawl_files("weekly docs?x", None, None)
+        .await
+        .unwrap();
+    let req = &server.requests()[0];
+    assert_eq!(req.path, "/api/crawl/definitions/weekly%20docs%3Fx/files");
+    assert!(
+        req.query.is_none(),
+        "no options set must send no query, got {:?}",
+        req.query
+    );
+
+    cloud
+        .saved_crawl_files("weekly-docs", None, Some(3))
+        .await
+        .unwrap();
+    assert_eq!(server.requests()[1].query.as_deref(), Some("runs=3"));
+}

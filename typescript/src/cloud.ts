@@ -33,7 +33,14 @@ import {
 } from "./errors.js";
 import { DEFAULT_RETRY_POLICY, isSafeMethod, newIdempotencyKey, sleep, withRetry } from "./retry.js";
 import type { RetryPolicy } from "./retry.js";
-import type { ChangeListParams, CrawlJob, CrawlStartBody, RecentChange } from "./types.js";
+import type {
+  ChangeListParams,
+  CrawlFilesResult,
+  CrawlJob,
+  CrawlStartBody,
+  RecentChange,
+  SavedCrawlFilesResult,
+} from "./types.js";
 import { warmWebCrypto } from "./webcrypto.js";
 
 const DEFAULT_CLOUD_URL = "https://api.usewrit.app";
@@ -1005,6 +1012,39 @@ export class CloudApi {
   async crawlStatus(id: number): Promise<CrawlJob> {
     this.#requireKey("Crawl status");
     return (await this.#send("GET", `/api/crawl/${id}`)) as CrawlJob;
+  }
+
+  /**
+   * The ORIGINAL documents a crawl captured as stored files — PDFs, office
+   * docs, images, CSVs the crawler reached. The crawl's dataset holds the
+   * extracted text; each entry here carries the file metadata plus a short-TTL
+   * `download_url` fetchable with no further auth (stream it straight to disk).
+   * Requires an API key, like the rest of the crawl surface.
+   */
+  async crawlFiles(id: number, opts: { limit?: number } = {}): Promise<CrawlFilesResult> {
+    this.#requireKey("Crawl files");
+    const qs = opts.limit !== undefined ? `?limit=${opts.limit}` : "";
+    return (await this.#send("GET", `/api/crawl/${id}/files${qs}`)) as CrawlFilesResult;
+  }
+
+  /**
+   * Documents captured by a SAVED crawl's recent completed run(s) — by default
+   * just the latest run (the current version of every document); raise `runs`
+   * to also reach older versions still referenced by earlier runs.
+   */
+  async savedCrawlFiles(
+    ref: number | string,
+    opts: { limit?: number; runs?: number } = {},
+  ): Promise<SavedCrawlFilesResult> {
+    this.#requireKey("Crawl files");
+    const params = new URLSearchParams();
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.runs !== undefined) params.set("runs", String(opts.runs));
+    const qs = params.size ? `?${params}` : "";
+    return (await this.#send(
+      "GET",
+      `/api/crawl/definitions/${encodeURIComponent(String(ref))}/files${qs}`,
+    )) as SavedCrawlFilesResult;
   }
 
   /**

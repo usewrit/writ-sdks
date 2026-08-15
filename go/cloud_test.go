@@ -228,3 +228,99 @@ func TestCloudPaymentErrors(t *testing.T) {
 		t.Errorf("message = %q", credErr.Message)
 	}
 }
+
+// Crawl files: the keyless tier must refuse BEFORE any network call, exactly as
+// the other metered verbs do — otherwise a free-tier caller burns a round trip
+// to be told no.
+func TestCloudCrawlFilesNoRequest(t *testing.T) {
+	clearCloudEnv(t)
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(WithCloudURL(srv.URL), WithClientID("dev-123"))
+	if _, err := c.Cloud.CrawlFiles(ctxT(t), 42, nil); !errors.As(err, new(*APIKeyRequiredError)) {
+		t.Fatalf("CrawlFiles: want *APIKeyRequiredError, got %v", err)
+	}
+	if _, err := c.Cloud.SavedCrawlFiles(ctxT(t), "weekly-docs", nil); !errors.As(err, new(*APIKeyRequiredError)) {
+		t.Fatalf("SavedCrawlFiles: want *APIKeyRequiredError, got %v", err)
+	}
+	if hits != 0 {
+		t.Errorf("server hits = %d, want 0 (no network call)", hits)
+	}
+}
+
+// The metered path, its query string, and the nullable fields. `content_type`
+// and `source_url` are pointers precisely so a null survives as "absent" rather
+// than collapsing to "" — assert that, since it is the reason for the pointers.
+func TestCloudCrawlFilesMetered(t *testing.T) {
+	clearCloudEnv(t)
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"crawl_id":42,"total":1,"files":[{"file_id":"file_a","filename":"report.pdf",` +
+			`"content_type":null,"size":1024,"version":2,"source_url":"https://example.com/report.pdf",` +
+			`"crawl_ids":[41,42],"created_at":"2026-08-15T00:00:00Z","download_url":"https://dl.example/x"}]}`))
+	}))
+	defer srv.Close()
+
+	limit := 10
+	c := New(WithCloudURL(srv.URL), WithAPIKey("wt_secret"))
+	res, err := c.Cloud.CrawlFiles(ctxT(t), 42, &CrawlFilesOptions{Limit: &limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/crawl/42/files" {
+		t.Errorf("path = %q, want /api/crawl/42/files", gotPath)
+	}
+	if gotQuery != "limit=10" {
+		t.Errorf("query = %q, want limit=10", gotQuery)
+	}
+	if res.CrawlID != 42 || res.Total != 1 || len(res.Files) != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+	f := res.Files[0]
+	if f.ContentType != nil {
+		t.Errorf("ContentType = %v, want nil for a JSON null", *f.ContentType)
+	}
+	if f.SourceURL == nil || *f.SourceURL != "https://example.com/report.pdf" {
+		t.Errorf("SourceURL = %v", f.SourceURL)
+	}
+	if f.Version != 2 || len(f.CrawlIDs) != 2 {
+		t.Errorf("version/crawl_ids = %d/%v", f.Version, f.CrawlIDs)
+	}
+}
+
+// A saved crawl is addressable by slug, so the ref must be path-escaped rather
+// than concatenated — and an unset option must not emit a bare "?runs=".
+func TestCloudSavedCrawlFilesRefAndParams(t *testing.T) {
+	clearCloudEnv(t)
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"definition":{"slug":"weekly docs"},"total":0,"files":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(WithCloudURL(srv.URL), WithAPIKey("wt_secret"))
+	if _, err := c.Cloud.SavedCrawlFiles(ctxT(t), "weekly docs", nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/crawl/definitions/weekly docs/files" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotQuery != "" {
+		t.Errorf("query = %q, want empty when no options are set", gotQuery)
+	}
+
+	runs := 3
+	if _, err := c.Cloud.SavedCrawlFiles(ctxT(t), "weekly-docs", &SavedCrawlFilesOptions{Runs: &runs}); err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "runs=3" {
+		t.Errorf("query = %q, want runs=3", gotQuery)
+	}
+}
