@@ -925,9 +925,21 @@ class Cloud(_CloudConfig):
             return body
         raise _cloud_error(resp.status_code, body)
 
-    def scrape(self, url: str) -> dict[str, Any]:
-        """Scrape ONE page to clean markdown. Works on both tiers."""
-        out = self._send("POST", self._scrape_path(), {"url": url})
+    def scrape(self, url: str, *, persona_id: Optional[int] = None,
+               use_residential: bool = False) -> dict[str, Any]:
+        """Scrape ONE page to clean markdown. Works on both tiers.
+
+        ``persona_id`` scrapes a page behind a login (metered tier only; forces the
+        identity's own residential exit). ``use_residential`` fetches through the
+        platform residential network for a page that blocks datacenter IPs — money-safe
+        (degrades to direct when it can't be funded). Both are ignored on the keyless
+        tier, which is always direct."""
+        body: dict[str, Any] = {"url": url}
+        if persona_id is not None:
+            body["persona_id"] = persona_id
+        if use_residential:
+            body["use_residential"] = True
+        out = self._send("POST", self._scrape_path(), body)
         if isinstance(out, dict):
             out.setdefault("tier", self.tier)
         return out
@@ -1076,8 +1088,14 @@ class AsyncCloud(_CloudConfig):
             return body
         raise _cloud_error(resp.status_code, body)
 
-    async def scrape(self, url: str) -> dict[str, Any]:
-        out = await self._send("POST", self._scrape_path(), {"url": url})
+    async def scrape(self, url: str, *, persona_id: Optional[int] = None,
+                     use_residential: bool = False) -> dict[str, Any]:
+        body: dict[str, Any] = {"url": url}
+        if persona_id is not None:
+            body["persona_id"] = persona_id
+        if use_residential:
+            body["use_residential"] = True
+        out = await self._send("POST", self._scrape_path(), body)
         if isinstance(out, dict):
             out.setdefault("tier", self.tier)
         return out

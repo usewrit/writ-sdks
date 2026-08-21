@@ -82,20 +82,36 @@ type CrawlList struct {
 // / same_domain / allow_subdomains true). IncludePaths/ExcludePaths are
 // path-regex allow/deny lists.
 type CrawlStartParams struct {
-	URL             string          `json:"url"`
-	Name            string          `json:"name,omitempty"`
-	ExtractMode     string          `json:"extract_mode,omitempty"`
-	ExtractSchema   json.RawMessage `json:"extract_schema,omitempty"`
-	PersonaID       *int64          `json:"persona_id,omitempty"`
-	IncludePaths    []string        `json:"include_paths,omitempty"`
-	ExcludePaths    []string        `json:"exclude_paths,omitempty"`
-	MaxDepth        *int64          `json:"max_depth,omitempty"`
-	PageBudget      *int64          `json:"page_budget,omitempty"`
-	MaxConcurrent   *int64          `json:"max_concurrent,omitempty"`
-	DelayMS         *int64          `json:"delay_ms,omitempty"`
-	RespectRobots   *bool           `json:"respect_robots,omitempty"`
-	SameDomain      *bool           `json:"same_domain,omitempty"`
-	AllowSubdomains *bool           `json:"allow_subdomains,omitempty"`
+	URL           string          `json:"url"`
+	Name          string          `json:"name,omitempty"`
+	ExtractMode   string          `json:"extract_mode,omitempty"`
+	ExtractSchema json.RawMessage `json:"extract_schema,omitempty"`
+	// Executor: "regular" (default, deterministic) or "ai" (an agent fleet reads
+	// each page against ExtractPrompt). ExtractPrompt is required with "ai".
+	Executor      string `json:"executor,omitempty"`
+	ExtractPrompt string `json:"extract_prompt,omitempty"`
+	PersonaID     *int64 `json:"persona_id,omitempty"`
+	// RenderMode: "auto" (default) | "http" (never open a browser) | "browser"
+	// (JS/SPA sites). OCRMode: "auto" | "off" | "force".
+	RenderMode      string   `json:"render_mode,omitempty"`
+	OCRMode         string   `json:"ocr_mode,omitempty"`
+	Intent          string   `json:"intent,omitempty"`
+	IncludePaths    []string `json:"include_paths,omitempty"`
+	ExcludePaths    []string `json:"exclude_paths,omitempty"`
+	MaxDepth        *int64   `json:"max_depth,omitempty"`
+	PageBudget      *int64   `json:"page_budget,omitempty"`
+	MaxConcurrent   *int64   `json:"max_concurrent,omitempty"`
+	ShardSize       *int64   `json:"shard_size,omitempty"`
+	DelayMS         *int64   `json:"delay_ms,omitempty"`
+	RespectRobots   *bool    `json:"respect_robots,omitempty"`
+	SameDomain      *bool    `json:"same_domain,omitempty"`
+	AllowSubdomains *bool    `json:"allow_subdomains,omitempty"`
+	// UseResidential routes every shard through the platform residential network
+	// (premium) — for sites that block datacenter IPs. A persona crawl forces it
+	// on. Money-safe: degrades to direct when unfunded. Speed: "slow" | "normal"
+	// (default) | "fast" — share of your parallel-agent allowance.
+	UseResidential *bool  `json:"use_residential,omitempty"`
+	Speed          string `json:"speed,omitempty"`
 }
 
 // CrawlCancelResult is POST /v1/crawl/:id/cancel — the refreshed crawl view

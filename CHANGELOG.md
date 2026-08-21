@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-20 — TypeScript, Python, Go, Rust
+
+### Added
+
+- **Scrape a page that is behind a login, or that blocks datacenter IPs.** `scrape` takes two new
+  optional arguments, and the crawl parameters gain the same pair:
+  - `persona_id` / `personaId` / `PersonaID` — scrape as a saved identity, so a page only visible
+    to a signed-in user can be read. Metered tier only, and it forces that identity's own
+    residential exit so the request comes from where the identity normally appears.
+  - `use_residential` / `useResidential` / `UseResidential` — route through the platform
+    residential network for sites that refuse datacenter addresses. Money-safe: it degrades to a
+    direct fetch when it cannot be funded rather than failing the call.
+
+  Both are ignored on the keyless tier, which is always direct, and both default off — an existing
+  call behaves exactly as before.
+
+
 ## [1.2.0] — 2026-08-15 — TypeScript, Python, Go, Rust
 
 ### Added

@@ -32,7 +32,7 @@ import (
 )
 
 // Version is the SDK version reported in the User-Agent header.
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // userAgent is sent on every request as required by the cross-SDK contract.
 const userAgent = "writ-sdk-go/" + Version

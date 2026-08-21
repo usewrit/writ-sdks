@@ -982,9 +982,23 @@ export class CloudApi {
   }
 
   /** Scrape ONE page to clean markdown. Works on both tiers. */
-  async scrape(url: string): Promise<ScrapeResult> {
+  /**
+   * Scrape ONE page to clean markdown. Works on both tiers.
+   *
+   * `personaId` scrapes a page behind a login (metered tier only; forces the identity's own
+   * residential exit). `useResidential` fetches through the platform residential network for a
+   * page that blocks datacenter IPs — money-safe (degrades to direct when unfunded). Both are
+   * ignored on the keyless tier, which is always direct.
+   */
+  async scrape(
+    url: string,
+    opts: { personaId?: number; useResidential?: boolean } = {},
+  ): Promise<ScrapeResult> {
     const path = this.#apiKey ? "/api/crawl/scrape" : "/v1/keyless/scrape";
-    const raw = await this.#send("POST", path, { url });
+    const body: Record<string, unknown> = { url };
+    if (opts.personaId != null) body.persona_id = opts.personaId;
+    if (opts.useResidential) body.use_residential = true;
+    const raw = await this.#send("POST", path, body);
     return normalizeScrape(raw as Record<string, unknown>, this.tier);
   }
 

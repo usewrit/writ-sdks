@@ -816,6 +816,22 @@ pub struct CrawlStartParams {
     /// Persona to crawl as.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persona_id: Option<i64>,
+    /// `"regular"` (default, deterministic) | `"ai"` (an agent fleet reads each page
+    /// against `extract_prompt`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    /// Required with `executor: "ai"`: what each agent extracts per page, in plain language.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extract_prompt: Option<String>,
+    /// How each page is fetched: `"auto"` (default) | `"http"` | `"browser"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_mode: Option<String>,
+    /// OCR policy for non-HTML docs / DOM-empty renders: `"auto"` (default) | `"off"` | `"force"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_mode: Option<String>,
+    /// Plain-English goal; scopes the crawl to matching pages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     /// Path-regex allowlist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_paths: Option<Vec<String>>,
@@ -843,6 +859,17 @@ pub struct CrawlStartParams {
     /// Allow subdomains of the seed domain (default true).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_subdomains: Option<bool>,
+    /// URLs fetched per shard batch (default 20).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shard_size: Option<i64>,
+    /// Route every shard through the platform residential network (premium) — for
+    /// sites that block datacenter IPs. A persona crawl forces it on. Money-safe:
+    /// degrades to direct when unfunded. Default false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_residential: Option<bool>,
+    /// Throughput tier: `"slow"` | `"normal"` (default) | `"fast"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
 }
 
 /// `GET /v1/crawl` → `{crawls: [CrawlJob…]}`. **Not** a [`crate::Page`]: this

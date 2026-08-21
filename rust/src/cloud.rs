@@ -173,6 +173,17 @@ pub struct MapOptions {
     pub limit: Option<i64>,
 }
 
+/// Options for [`CloudApi::scrape_with`].
+#[derive(Debug, Clone, Default)]
+pub struct ScrapeOptions {
+    /// Scrape a page behind a login (metered tier only; forces the identity's own
+    /// residential exit).
+    pub persona_id: Option<i64>,
+    /// Fetch through the platform residential network for a page that blocks
+    /// datacenter IPs. Money-safe: degrades to direct when unfunded.
+    pub use_residential: bool,
+}
+
 /// Configuration for [`CloudClient`]. `build()` performs **no network I/O**; the
 /// only side effect is reading/minting `~/.writ/client_id` on the first keyless
 /// call (lazily), never at construction.
@@ -327,15 +338,33 @@ impl CloudClient {
     /// Scrape ONE page to clean markdown. Works on both tiers.
     ///
     /// `POST /api/crawl/scrape` (metered) or `/v1/keyless/scrape` (keyless), body
-    /// `{"url": url}`.
+    /// `{"url": url}`. Use [`CloudApi::scrape_with`] to scrape behind a login or
+    /// through the residential network.
     pub async fn scrape(&self, url: &str) -> Result<ScrapeResult> {
+        self.scrape_with(url, &ScrapeOptions::default()).await
+    }
+
+    /// Scrape ONE page with options. `persona_id` scrapes a page behind a login
+    /// (metered tier only; forces the identity's own residential exit).
+    /// `use_residential` fetches through the platform residential network for a page
+    /// that blocks datacenter IPs — money-safe (degrades to direct when unfunded).
+    /// Both are ignored on the keyless tier, which is always direct.
+    pub async fn scrape_with(&self, url: &str, opts: &ScrapeOptions) -> Result<ScrapeResult> {
         let path = if self.inner.api_key.is_some() {
             "/api/crawl/scrape"
         } else {
             "/v1/keyless/scrape"
         };
+        let mut body = serde_json::Map::new();
+        body.insert("url".into(), Value::from(url));
+        if let Some(pid) = opts.persona_id {
+            body.insert("persona_id".into(), Value::from(pid));
+        }
+        if opts.use_residential {
+            body.insert("use_residential".into(), Value::from(true));
+        }
         let raw = self
-            .send(Method::POST, path, Some(&serde_json::json!({ "url": url })))
+            .send(Method::POST, path, Some(&Value::Object(body)))
             .await?;
         Ok(normalize_scrape(&raw, self.tier()))
     }

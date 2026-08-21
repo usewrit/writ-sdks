@@ -59,7 +59,7 @@ pub use cloud::{
     CloudMonitor, CloudMonitorChange, CloudMonitorListOptions, CloudMonitorRun, CloudMonitors,
     CloudPersona, CloudPersonas, CloudTier, KeylessCrawlLimits, KeylessCrawlOptions,
     KeylessCrawlPage, KeylessCrawlResult, KeylessQuota, MapCounts, MapEntry, MapOptions, MapResult,
-    RecentChange, ScrapeResult, TotpValidation, TERMINAL_BUILD_STATUSES,
+    RecentChange, ScrapeOptions, ScrapeResult, TotpValidation, TERMINAL_BUILD_STATUSES,
 };
 pub use error::{Result, WritError};
 pub use models::{file_slots, output_files};

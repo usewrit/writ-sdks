@@ -175,13 +175,33 @@ func (s *CloudService) Tier() CloudTier {
 	return TierKeyless
 }
 
-// Scrape scrapes ONE page to clean markdown. Works on both tiers.
-func (s *CloudService) Scrape(ctx context.Context, url string) (*CloudScrapeResult, error) {
+// ScrapeOptions tunes a single-page Scrape. PersonaID scrapes a page behind a
+// login (metered tier only; forces the identity's own residential exit).
+// UseResidential fetches through the platform residential network for a page that
+// blocks datacenter IPs — money-safe (degrades to direct when unfunded). Both are
+// ignored on the keyless tier, which is always direct.
+type ScrapeOptions struct {
+	PersonaID      *int64
+	UseResidential bool
+}
+
+// Scrape scrapes ONE page to clean markdown. Works on both tiers. Pass an optional
+// *ScrapeOptions to scrape behind a login or through the residential network.
+func (s *CloudService) Scrape(ctx context.Context, url string, opts ...*ScrapeOptions) (*CloudScrapeResult, error) {
 	path := "/v1/keyless/scrape"
 	if s.apiKey != "" {
 		path = "/api/crawl/scrape"
 	}
-	data, err := s.send(ctx, http.MethodPost, path, map[string]any{"url": url})
+	body := map[string]any{"url": url}
+	if len(opts) > 0 && opts[0] != nil {
+		if opts[0].PersonaID != nil {
+			body["persona_id"] = *opts[0].PersonaID
+		}
+		if opts[0].UseResidential {
+			body["use_residential"] = true
+		}
+	}
+	data, err := s.send(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, err
 	}

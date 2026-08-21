@@ -1331,6 +1331,26 @@ export interface CrawlStartBody {
   same_domain?: boolean;
   /** Default true. */
   allow_subdomains?: boolean;
+  /** `"regular"` (default, deterministic) or `"ai"` — an agent fleet reads each page against `extract_prompt`. */
+  executor?: "regular" | "ai";
+  /** Required with `executor: "ai"`: what each agent should extract per page, in plain language. */
+  extract_prompt?: string;
+  /** How each page is fetched: `"auto"` (default) | `"http"` (never open a browser) | `"browser"` (JS/SPA sites). */
+  render_mode?: "auto" | "http" | "browser";
+  /** OCR policy for non-HTML docs / DOM-empty renders: `"auto"` (default) | `"off"` | `"force"`. */
+  ocr_mode?: "auto" | "off" | "force";
+  /** Plain-English goal; scopes the crawl to matching pages and ranks the frontier. */
+  intent?: string;
+  /**
+   * Route every shard through the platform residential network (premium) — for sites that block
+   * datacenter IPs or show a bot wall. A persona crawl forces this on. Money-safe: degrades to
+   * direct when it can't be funded. Default false.
+   */
+  use_residential?: boolean;
+  /** Throughput tier: `"slow"` | `"normal"` (default) | `"fast"` — share of your parallel-agent allowance. */
+  speed?: "slow" | "normal" | "fast";
+  /** URLs fetched per shard batch. Default 20. */
+  shard_size?: number;
   /**
    * Content-selection spec applied to every crawled page:
    * `{ preset, include_comments, exclude_selectors, include_selectors, keep }`. Omit for default
