@@ -1,0 +1,69 @@
+{
+  "name": "@usewrit/web",
+  "version": "0.2.0",
+  "description": "Let a website run Writ workflows on the visitor's own computer through the Writ browser extension: a drop-in setup banner, one-click installable workflows, a typed client from the contract file, calls with progress, cancel and typed errors.",
+  "license": "MIT",
+  "author": "The Writ Project Authors",
+  "homepage": "https://github.com/usewrit/writ-sdks/tree/main/web#readme",
+  "bugs": {
+    "url": "https://github.com/usewrit/writ-sdks/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usewrit/writ-sdks.git",
+    "directory": "web"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/writ-web.iife.js",
+  "jsdelivr": "./dist/writ-web.iife.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./iife": "./dist/writ-web.iife.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "sideEffects": [
+    "./dist/umd.js",
+    "./dist/writ-web.iife.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run build:iife",
+    "build:iife": "esbuild src/umd.ts --bundle --format=iife --platform=browser --target=es2020 --minify --sourcemap --legal-comments=none --outfile=dist/writ-web.iife.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "writ",
+    "browser-extension",
+    "automation",
+    "workflows",
+    "local-network",
+    "sdk",
+    "web"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.7"
+  }
+}

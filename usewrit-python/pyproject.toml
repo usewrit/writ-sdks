@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "usewrit"
+version = "0.1.0"
+description = "The server side of the Writ Bridge for Python: run your website's Writ functions on a signed-in visitor's own computer (with signed receipts) or on Writ Cloud, behind one route you mount"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "The Writ Project Authors" }]
+keywords = ["writ", "writ-bridge", "browser-extension", "receipts", "fastapi", "asgi", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Typing :: Typed",
+]
+dependencies = ["cryptography>=41", "httpx>=0.27"]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+fastapi = ["fastapi>=0.100"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=1.0",
+    "fastapi>=0.100",
+    "redis>=5.0",
+    "fakeredis[lua]>=2.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/usewrit/writ-sdks"
+Repository = "https://github.com/usewrit/writ-sdks"
+Documentation = "https://github.com/usewrit/writ-sdks/tree/main/usewrit-python#readme"
+Issues = "https://github.com/usewrit/writ-sdks/issues"
+Changelog = "https://github.com/usewrit/writ-sdks/blob/main/usewrit-python/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/usewrit"]
+
+# The sdist is what a distro or an auditor rebuilds from, so it carries the tests, their golden
+# vectors and the licence, not just the importable package.
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

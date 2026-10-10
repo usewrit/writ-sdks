@@ -1,0 +1,27 @@
+{
+  "_about": "Writ Bridge server-minted values (CONTRACT.md §12.2). token = base64url(RFC 8785 canonical JSON) + '.' + base64url(HMAC-SHA256(secret, first part as ASCII)). Node and Python must reproduce these bytes exactly and reject any altered character.",
+  "secret": "writ-bridge-test-secret-0123456789abcdef",
+  "user_token": {
+    "payload": {
+      "v": 1,
+      "typ": "user",
+      "sub": "user-42",
+      "exp": 1791553600
+    },
+    "payload_canonical": "{\"exp\":1791553600,\"sub\":\"user-42\",\"typ\":\"user\",\"v\":1}",
+    "token": "eyJleHAiOjE3OTE1NTM2MDAsInN1YiI6InVzZXItNDIiLCJ0eXAiOiJ1c2VyIiwidiI6MX0.tpzY8uJrEmFFr-Y4cT6II8k-11OdUiIYgpc3hPNV9Ps"
+  },
+  "challenge": {
+    "payload": {
+      "v": 1,
+      "typ": "challenge",
+      "sub": "user-42",
+      "key": "auth.verify_login",
+      "nonce": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "exp": 1791550120
+    },
+    "payload_canonical": "{\"exp\":1791550120,\"key\":\"auth.verify_login\",\"nonce\":\"AQEBAQEBAQEBAQEBAQEBAQ\",\"sub\":\"user-42\",\"typ\":\"challenge\",\"v\":1}",
+    "token": "eyJleHAiOjE3OTE1NTAxMjAsImtleSI6ImF1dGgudmVyaWZ5X2xvZ2luIiwibm9uY2UiOiJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRIiwic3ViIjoidXNlci00MiIsInR5cCI6ImNoYWxsZW5nZSIsInYiOjF9.egHdxq-E6IKkMMRDnyFKi33B-vkR4JUgvdiL6atuN-A"
+  },
+  "receipt_golden": "the Writ engine's receipt golden file (receipt_golden.json), copied byte for byte to server-node/test/fixtures/ and usewrit-python/tests/fixtures/"
+}

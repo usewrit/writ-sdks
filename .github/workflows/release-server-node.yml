@@ -1,0 +1,94 @@
+name: Release — npm (@usewrit/server)
+
+# Each package in this repo has its OWN tag prefix and its own workflow, so a tag
+# says unambiguously which package it cuts (see release-npm.yml).
+#
+#   git tag server-node-v0.1.0 && git push origin server-node-v0.1.0
+#
+# AUTH: npm trusted publishing cannot be configured before the package exists, so
+# the FIRST release uses NPM_TOKEN from the `npm-publish` environment (a granular
+# token that may publish new packages in the @usewrit scope). Afterwards configure
+#   npmjs.com → @usewrit/server → Settings → Trusted Publisher
+#     owner: usewrit   repo: writ-sdks   workflow: release-server-node.yml   environment: npm-publish
+on:
+  push:
+    tags:
+      - "server-node-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish @usewrit/server
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      # npm provenance: binds the tarball to this workflow, repo and commit.
+      id-token: write
+    defaults:
+      run:
+        working-directory: server-node
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # Provenance needs npm >= 9.5; trusted publishing needs >= 11.5.1.
+      - name: Use a current npm
+        run: npm install -g npm@latest
+
+      - name: Check the tag matches package.json and VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/server-node-v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag server-node-v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+          # The library reports its own version (src/constants.ts); it must not lag the package.
+          if ! grep -qx "export const VERSION = \"$pkg\";" src/constants.ts; then
+            echo "::error::src/constants.ts VERSION does not match package.json version $pkg"
+            exit 1
+          fi
+          echo "publishing @usewrit/server@$pkg"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+      - name: Verify the tarball
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const raw = require("/tmp/pack.json");
+            const p = Array.isArray(raw) ? raw[0] : Object.values(raw)[0];
+            const files = p.files.map(f => f.path);
+            for (const want of ["LICENSE", "README.md", "package.json", "dist/index.js", "dist/index.d.ts"]) {
+              if (!files.includes(want)) { console.error("missing: " + want); process.exit(1); }
+            }
+            console.log("tarball ok: " + files.length + " files");
+          '
+
+      # AUTH: trusted publishing (configure this repo+workflow on npmjs.com) or
+      # NPM_TOKEN in the `npm-publish` environment. Provenance works either way.
+      - name: Publish
+        if: github.event_name == 'push' || inputs.dry_run == false
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run only
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: echo "dry_run=true — tarball verified, nothing published."

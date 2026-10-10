@@ -1,0 +1,87 @@
+# ---------------------------------------------------------------------------
+# gitleaks configuration
+# ---------------------------------------------------------------------------
+# The publish pipeline runs `gitleaks detect --no-git` over this tree and FAILS
+# CLOSED on any finding (gitleaks reads this file from the scanned directory).
+#
+# The Writ Bridge packages (web, server-node, usewrit-python) prove they mint and
+# read tokens byte for byte the way every other implementation does. That takes
+# GOLDEN VECTORS: a published test secret and the tokens it signs, plus key-shaped
+# literals the validation tests must accept or refuse. None of them is, or was
+# ever, a live credential: the secrets are counting sequences
+# (`0123456789abcdef...`) and the tokens are signed with those secrets.
+#
+# EXCEPTION POLICY (the same as the writ-agent repository's): each entry states
+# what it exempts and why the value is not a real secret, and is pinned to the
+# files that hold it AND to the exact literal (`condition = "AND"`), never a
+# blanket path exclusion, so a REAL secret landing in one of these files is
+# still caught. Removing an entry does not remove a secret; it removes the test
+# that proves two SDKs agree on the bytes.
+# ---------------------------------------------------------------------------
+
+title = "writ-sdks"
+
+[extend]
+useDefault = true
+
+# fixtures/run_token_golden.json (and its generator, its per-package copy and the
+# tests that inline it): the run-token secret `wsk_0123...` and the two JWTs it
+# signs for publication `pub_0123456789abcdefABCDEF`. @usewrit/server and usewrit
+# must mint these bytes exactly; @usewrit/web must accept their shape.
+[[allowlists]]
+description = "Run-token golden vectors: a counting-sequence test secret and the two JWTs it signs"
+condition = "AND"
+targetRules = ["generic-api-key", "jwt"]
+paths = [
+    '''(^|/)fixtures/run_token_golden\.json$''',
+    '''(^|/)fixtures/run_token_golden_gen\.py$''',
+    '''(^|/)server-node/test/linked\.test\.ts$''',
+    '''(^|/)usewrit-python/tests/test_linked\.py$''',
+    '''(^|/)web/test/run-token\.test\.ts$''',
+]
+regexes = [
+    '''^wsk_0123456789abcdefghijABCDEFGHIJ0123456789$''',
+    '''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJwdWIiOiJwdWJfMDEyMzQ1Njc4OWFiY2RlZkFCQ0RFRiIsImlhdCI6MTc5MTU1MDAwMCwiZXhwIjoxNzkxNTUwNjAwLCJzdWIiOiJ1NDIifQ\.PtFpzHp1-YdsYPZ6RPNNPLF5MLz0jNgEVcIKLs1InXk$''',
+    '''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJwdWIiOiJwdWJfMDEyMzQ1Njc4OWFiY2RlZkFCQ0RFRiIsImlhdCI6MTc5MTU1MDAwMCwiZXhwIjoxNzkxNTUwNjAwfQ\.Ji0gNK-HXAQRq7Sdgyu9jTdyonUpbLb0mXjwAuINEH0$''',
+]
+
+# fixtures/bridge_tokens_golden.json and its usewrit-python copy: the user token
+# the published test secret `writ-bridge-test-secret-0123456789abcdef` mints for
+# `user-42`. Both server SDKs must reproduce it byte for byte.
+[[allowlists]]
+description = "Writ Bridge golden user token, signed with the published test secret"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)fixtures/bridge_tokens_golden\.json$''']
+regexes = [
+    '''^eyJleHAiOjE3OTE1NTM2MDAsInN1YiI6InVzZXItNDIiLCJ0eXAiOiJ1c2VyIiwidiI6MX0\.tpzY8uJrEmFFr-Y4cT6II8k-11OdUiIYgpc3hPNV9Ps$''',
+]
+
+# Key-shaped literals in the linked-workflow and Writ Cloud tests: a publishable
+# key (`wpk_`), a secret key the page must REFUSE to carry (`wsk_`), and a Writ
+# Cloud API key sent only to a mocked cloud. Counting sequences, never issued.
+[[allowlists]]
+description = "Key-shaped test literals (wpk_/wsk_/wk_test_ counting sequences) in the package tests"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = [
+    '''(^|/)web/test/fixtures\.ts$''',
+    '''(^|/)web/test/linked\.test\.ts$''',
+    '''(^|/)server-node/test/linked\.test\.ts$''',
+    '''(^|/)usewrit-python/tests/test_linked\.py$''',
+    '''(^|/)usewrit-python/tests/helpers\.py$''',
+]
+regexes = [
+    '''^wpk_0123456789abcdef0123456789ABCDEF$''',
+    '''^wsk_0123456789abcdef0123456789ABCDEF$''',
+    '''^wk_test_0123456789abcdef$''',
+]
+
+# web/test/bridge-channel.test.ts: an opaque user token the fake server never
+# verifies, base64url of `{"sub":"user-42"}` and of the word "signature".
+[[allowlists]]
+description = "Unsigned placeholder user token in the page-channel tests"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)web/test/bridge-channel\.test\.ts$''']
+regexes = ['''^eyJzdWIiOiJ1c2VyLTQyIn0\.c2lnbmF0dXJl$''']

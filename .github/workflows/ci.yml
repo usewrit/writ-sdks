@@ -4,6 +4,9 @@ name: CI
 # so a failure names the language immediately, and every job runs on every push:
 # the whole point of keeping them in one repo is that a wire change breaks all
 # four in the same PR rather than three of them silently, months apart.
+#
+# The three website-integration packages (web, server-node, usewrit-python) share
+# the Writ Bridge's golden vectors in fixtures/, so they run on every push too.
 on:
   push:
     branches: [main]
@@ -106,6 +109,81 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  web:
+    name: Web (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines: node >=18. The library itself runs in the browser; Node is
+        # what builds and tests it.
+        node: ["18", "20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Type-check (source and tests)
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - run: npm test
+      # The package ships `dist/`, and script-tag users load the IIFE build.
+      - name: The built entrypoints must exist
+        run: test -s dist/index.js && test -s dist/index.d.ts && test -s dist/writ-web.iife.js
+
+  server-node:
+    name: Server for Node (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server-node
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: server-node/package-lock.json
+      - run: npm ci
+      - name: Type-check (source and tests)
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - run: npm test
+      - name: The built entrypoint must exist
+        run: test -s dist/index.js && test -s dist/index.d.ts
+
+  usewrit-python:
+    name: usewrit (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: usewrit-python
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      # [dev] brings the test runner plus FastAPI and Redis (fakeredis with Lua)
+      # for the adapter and store tests.
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
   # The published artifacts are the real deliverable, so build each one and prove
   # it carries its licence. A package that claims MIT without shipping the text
   # is an unbacked claim, and `files`/`include` lists are easy to get wrong.
@@ -152,6 +230,40 @@ jobs:
           wnames = zipfile.ZipFile(wh).namelist()
           assert any("LICENSE" in n for n in wnames), "wheel has no LICENSE"
           print("python sdist+wheel ok")
+          PY
+
+      - name: npm tarballs of @usewrit/web and @usewrit/server carry LICENSE
+        run: |
+          for d in web server-node; do
+            ( cd "$d" && npm ci && npm run build && npm pack --dry-run --json > "/tmp/pack-$d.json" )
+            node -e '
+              const d = process.argv[1];
+              const raw = require("/tmp/pack-" + d + ".json");
+              // npm <=11 emits an array; npm >=12 an object keyed by package name.
+              const p = Array.isArray(raw) ? raw[0] : Object.values(raw)[0];
+              const files = p.files.map(f => f.path);
+              for (const want of ["LICENSE", "README.md", "package.json", "dist/index.js"]) {
+                if (!files.includes(want)) { console.error(d + ": missing from tarball: " + want); process.exit(1); }
+              }
+              console.log(d + " tarball ok: " + files.length + " files");
+            ' "$d"
+          done
+
+      - name: usewrit sdist and wheel carry LICENSE
+        working-directory: usewrit-python
+        run: |
+          pip install build
+          python -m build --outdir /tmp/usewritdist
+          python - <<'PY'
+          import glob, tarfile, zipfile
+          sd = glob.glob("/tmp/usewritdist/*.tar.gz")[0]
+          names = tarfile.open(sd).getnames()
+          assert any(n.endswith("/LICENSE") for n in names), "sdist has no LICENSE"
+          assert any("/tests/" in n for n in names), "sdist has no tests"
+          wh = glob.glob("/tmp/usewritdist/*.whl")[0]
+          wnames = zipfile.ZipFile(wh).namelist()
+          assert any("LICENSE" in n for n in wnames), "wheel has no LICENSE"
+          print("usewrit sdist+wheel ok")
           PY
 
       - name: crates.io package carries LICENSE and excludes target/

@@ -142,7 +142,5 @@ CI runs `npm audit`, `pip-audit`, `govulncheck` and `cargo deny` on every push.
   contain a live token, the third is a tracking identifier; `.gitignore`
   excludes all three.
 - **Scope cloud API keys.** Give a key only the scopes you actually use.
-- **`https://api.usewrit.app` does not currently resolve.** Writ Cloud has not
-  launched. Until it does, `.cloud` calls fail with a connection error and only
-  the local surface is usable. Point `WRIT_CLOUD_URL` at your own endpoint if you
-  are running one.
+- **`.cloud` defaults to `https://api.usewrit.app`.** Point `WRIT_CLOUD_URL` at
+  your own self-hosted coordinator to keep `.cloud` calls on your own server.

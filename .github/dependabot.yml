@@ -35,6 +35,30 @@ updates:
         update-types: [minor, patch]
     labels: [dependencies, rust]
 
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      dev-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, web]
+
+  - package-ecosystem: npm
+    directory: /server-node
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      dev-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, server-node]
+
+  - package-ecosystem: pip
+    directory: /usewrit-python
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    labels: [dependencies, python]
+
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }

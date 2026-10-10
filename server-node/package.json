@@ -1,0 +1,65 @@
+{
+  "name": "@usewrit/server",
+  "version": "0.1.0",
+  "description": "The server side of the Writ Bridge for Node: run your website's Writ functions on a signed-in visitor's own computer (with signed receipts) or on Writ Cloud, from one typed object, behind one route you mount.",
+  "license": "MIT",
+  "author": "The Writ Project Authors",
+  "homepage": "https://github.com/usewrit/writ-sdks/tree/main/server-node#readme",
+  "bugs": {
+    "url": "https://github.com/usewrit/writ-sdks/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usewrit/writ-sdks.git",
+    "directory": "server-node"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "writ",
+    "writ-bridge",
+    "browser-extension",
+    "automation",
+    "workflows",
+    "receipts",
+    "ed25519",
+    "express",
+    "nextjs",
+    "sdk",
+    "server"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.7"
+  }
+}

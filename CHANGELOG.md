@@ -1,10 +1,32 @@
 # Changelog
 
-All notable changes to the Writ SDKs are documented here. The four packages
+All notable changes to the Writ SDKs are documented here. The seven packages
 version independently; each entry names the SDKs it affects. This project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [web 0.2.0 · server 0.1.0 · usewrit 0.1.0] — 2026-10-10 — @usewrit/web, @usewrit/server, usewrit
+
+### Added
+
+- **Three website-integration packages, first published.** A website can now run Writ workflows
+  on its visitors' own computers, through the Writ browser extension, with Writ Cloud as the
+  fallback. Each package has its own changelog, tag prefix and release workflow:
+  - `@usewrit/web` 0.2.0 (npm, [`web/`](web/CHANGELOG.md), tag `web-v*`) — the page side: talks
+    to the Writ browser extension. Race-free discovery, a drop-in setup banner, one-click
+    installable workflows, a typed client from the contract file, calls with progress, cancel and
+    typed errors, and a script-tag build. Zero runtime dependencies.
+  - `@usewrit/server` 0.1.0 (npm, [`server-node/`](server-node/CHANGELOG.md), tag
+    `server-node-v*`) — the Writ Bridge's server side for Node: verify signed receipts, mint user
+    tokens, challenges and run tokens, and route each function to the visitor's computer or Writ
+    Cloud behind one route you mount. Zero runtime dependencies.
+  - `usewrit` 0.1.0 (PyPI, [`usewrit-python/`](usewrit-python/CHANGELOG.md), tag
+    `usewrit-python-v*`) — the same for Python servers: an ASGI app, a FastAPI router and a Redis
+    store, byte-compatible with the Node package.
+
+  All three reproduce the shared golden vectors in [`fixtures/`](fixtures/) and run in CI.
+
 
 ## [1.3.0] — 2026-08-20 — TypeScript, Python, Go, Rust
 

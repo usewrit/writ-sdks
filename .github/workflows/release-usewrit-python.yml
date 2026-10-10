@@ -1,0 +1,96 @@
+name: Release — PyPI (usewrit)
+
+#   git tag usewrit-python-v0.1.0 && git push origin usewrit-python-v0.1.0
+#
+# Uses PyPI TRUSTED PUBLISHING (OIDC) — no API token anywhere. The project
+# `usewrit` does not exist on PyPI yet, so register a PENDING publisher for it
+# before the first tag (a publisher is bound to one workflow file, so the one
+# registered for writ-agent / release-pypi.yml does not cover this package):
+#   PyPI → Your projects → Publishing → Add a pending publisher
+#     project: usewrit   owner: usewrit   repo: writ-sdks
+#     workflow: release-usewrit-python.yml   environment: pypi
+on:
+  push:
+    tags:
+      - "usewrit-python-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish usewrit
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      # Required for trusted publishing — this IS the credential.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches pyproject.toml and __version__
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: usewrit-python
+        run: |
+          tag="${GITHUB_REF#refs/tags/usewrit-python-v}"
+          pkg="$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag usewrit-python-v$tag does not match pyproject version $pkg"
+            exit 1
+          fi
+          # The package reports its own version (usewrit.__version__); it must not lag pyproject.
+          code="$(python -c "import ast;print(ast.literal_eval(open('src/usewrit/_version.py').read().split('=',1)[1].strip()))")"
+          if [ "$code" != "$pkg" ]; then
+            echo "::error::src/usewrit/_version.py says $code, pyproject says $pkg"
+            exit 1
+          fi
+          echo "publishing usewrit==$pkg"
+
+      - name: Test
+        working-directory: usewrit-python
+        run: |
+          pip install -e ".[dev]"
+          python -m pytest -q
+
+      - name: Build
+        working-directory: usewrit-python
+        run: |
+          pip install build twine
+          python -m build --outdir dist
+          twine check dist/*
+
+      - name: Verify the artifacts carry LICENSE and tests
+        working-directory: usewrit-python
+        run: |
+          python - <<'PY'
+          import glob, tarfile, zipfile
+          sd = glob.glob("dist/*.tar.gz")[0]
+          names = tarfile.open(sd).getnames()
+          assert any(n.endswith("/LICENSE") for n in names), "sdist has no LICENSE"
+          assert any("/tests/" in n for n in names), "sdist has no tests"
+          wh = glob.glob("dist/*.whl")[0]
+          wnames = zipfile.ZipFile(wh).namelist()
+          assert any("LICENSE" in n for n in wnames), "wheel has no LICENSE"
+          assert any(n.endswith("usewrit/py.typed") for n in wnames), "wheel has no py.typed"
+          print("artifacts ok:", sd, wh)
+          PY
+
+      - name: Publish
+        if: github.event_name == 'push' || inputs.dry_run == false
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: usewrit-python/dist
+
+      - name: Dry run only
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: echo "dry_run=true — artifacts verified, nothing published."

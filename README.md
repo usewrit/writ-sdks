@@ -9,6 +9,9 @@
     <a href="https://pypi.org/project/writ-agent/"><img src="https://img.shields.io/pypi/v/writ-agent?style=flat-square&color=FF4A24&label=pypi" alt="PyPI"></a>
     <a href="https://crates.io/crates/writ-client"><img src="https://img.shields.io/crates/v/writ-client?style=flat-square&color=FF4A24&label=crates.io" alt="crates.io"></a>
     <a href="https://pkg.go.dev/github.com/usewrit/writ-sdks/go"><img src="https://img.shields.io/badge/pkg.go.dev-reference-007D9C?style=flat-square&logo=go&logoColor=white" alt="pkg.go.dev"></a>
+    <a href="https://www.npmjs.com/package/@usewrit/web"><img src="https://img.shields.io/npm/v/@usewrit/web?style=flat-square&color=FF4A24&label=%40usewrit%2Fweb" alt="npm @usewrit/web"></a>
+    <a href="https://www.npmjs.com/package/@usewrit/server"><img src="https://img.shields.io/npm/v/@usewrit/server?style=flat-square&color=FF4A24&label=%40usewrit%2Fserver" alt="npm @usewrit/server"></a>
+    <a href="https://pypi.org/project/usewrit/"><img src="https://img.shields.io/pypi/v/usewrit?style=flat-square&color=FF4A24&label=usewrit" alt="PyPI usewrit"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-FF4A24?style=flat-square" alt="License: MIT"></a>
   </p>
 
@@ -51,6 +54,20 @@ Requirements: Node ≥18 · Python ≥3.10 · Go ≥1.23 · Rust stable.
 Other languages: [`codegen/`](codegen/) generates raw REST bindings for Java, C#,
 Ruby and PHP from the OpenAPI spec. Those are unsupported and lack discovery and
 `run_and_wait` — see [`DESIGN.md`](DESIGN.md) §4/§8 to port those helpers.
+
+### Website integration: the Writ Bridge
+
+Three more packages let a **website** run Writ workflows on its visitors' own computers, through
+the Writ browser extension, with Writ Cloud as the fallback:
+
+| Package | Purpose | Install |
+|---|---|---|
+| [`@usewrit/web`](https://www.npmjs.com/package/@usewrit/web) ([`web/`](web/)) | The page side: talks to the Writ browser extension (setup banner, installable workflows, typed calls) | `npm i @usewrit/web` |
+| [`@usewrit/server`](https://www.npmjs.com/package/@usewrit/server) ([`server-node/`](server-node/)) | Verify signed receipts and run the Writ Bridge from a Node server | `npm i @usewrit/server` |
+| [`usewrit`](https://pypi.org/project/usewrit/) ([`usewrit-python/`](usewrit-python/)) | The same for Python servers, with FastAPI integration | `pip install usewrit` |
+
+Requirements: any current browser for `@usewrit/web` (Node ≥18 only to build and test it) ·
+Node ≥18 · Python ≥3.10.
 
 ## Point them wherever you run Writ
 
@@ -320,7 +337,10 @@ daemon wins.**
 
 ```
 typescript/   @usewrit/agent-sdk         zero runtime dependencies
+web/          @usewrit/web               websites, via the Writ browser extension; zero runtime dependencies
+server-node/  @usewrit/server            the Writ Bridge's server side for Node; zero runtime dependencies
 python/       writ-agent                 httpx
+usewrit-python/ usewrit                  Writ Bridge, server side, for Python; cryptography + httpx
 go/           .../writ-sdks/go           standard library only
 rust/         writ-client                reqwest + serde
 openapi/      writ-agent.yaml            OpenAPI 3.1 description of the wire
@@ -345,6 +365,9 @@ cd typescript && npm ci && npm test
 cd python     && pip install -e ".[dev]" && python -m pytest -q
 cd go         && go test -race ./...
 cd rust       && cargo test
+cd web            && npm ci && npm test
+cd server-node    && npm ci && npm test
+cd usewrit-python && pip install -e ".[dev]" && python -m pytest -q
 ```
 
 Every SDK also carries a **live smoke test** that discovers a real `writ-agentd`
