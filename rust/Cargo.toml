@@ -23,7 +23,7 @@ name = "writ_client"
 [workspace]
 
 [dependencies]
-reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.13", features = ["json", "stream", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
