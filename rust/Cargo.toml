@@ -34,7 +34,7 @@ bytes = "1"
 # constant-time, which is the whole point — a plain == on a hex digest leaks how
 # many leading bytes matched.
 hmac = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"
 # Retry backoff + watcher poll cadence need a timer. reqwest already pulls tokio
 # in; this makes the dependency explicit rather than relying on its features.
 tokio = { version = "1", features = ["time"] }
