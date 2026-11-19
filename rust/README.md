@@ -1,6 +1,9 @@
 # writ-client
 
-Official Rust SDK for the **Writ local agent** (`writ-agentd`) — the loopback HTTP
+[Writ](https://usewrit.app) · [SDK docs](https://usewrit.app/docs/sdks/) · [Writ Desktop](https://usewrit.app/desktop/)
+
+Official Rust SDK for [Writ](https://usewrit.app). Its local client talks to **Writ Desktop**
+through its engine (`writ-agentd`), the loopback HTTP
 API your workflows, monitors, runs, personas, secrets, and files live behind
 (`http://127.0.0.1:8131`, all routes under `/v1`).
 
