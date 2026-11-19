@@ -40,7 +40,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/usewrit/writ-sdks"
+Homepage = "https://usewrit.app"
 Repository = "https://github.com/usewrit/writ-sdks"
 Documentation = "https://github.com/usewrit/writ-sdks/tree/main/usewrit-python#readme"
 Issues = "https://github.com/usewrit/writ-sdks/issues"
