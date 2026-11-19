@@ -1,7 +1,10 @@
 # writ-agent
 
-Official Python SDK for the **Writ local agent** (`writ-agentd`) — the loopback
-daemon that runs your workflows, monitors, and automations on your own machine.
+[Writ](https://usewrit.app) · [SDK docs](https://usewrit.app/docs/sdks/) · [Writ Desktop](https://usewrit.app/desktop/)
+
+Official Python SDK for [Writ](https://usewrit.app). It talks to **Writ Desktop** on your own
+computer, through its engine `writ-agentd` (the loopback daemon that runs your workflows,
+monitors and automations), and to **Writ Cloud** through its `cloud` client.
 
 - Sync **and** async clients (`WritAgent`, `AsyncWritAgent`), same surface.
 - Automatic daemon discovery (env → `runtime.json` → liveness probe).
@@ -12,8 +15,8 @@ daemon that runs your workflows, monitors, and automations on your own machine.
 pip install writ-agent
 ```
 
-Requires Python ≥ 3.10 and a running Writ agent (the desktop app's daemon, or
-`writ-agentd` standalone).
+Requires Python ≥ 3.10 and, for the local client, a running
+[Writ Desktop](https://usewrit.app/desktop/).
 
 ## Quickstart (sync)
 
