@@ -33,7 +33,7 @@ bytes = "1"
 # Webhook signature verification (writ_client::webhook). `hmac`'s verify_slice is
 # constant-time, which is the whole point — a plain == on a hex digest leaks how
 # many leading bytes matched.
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 # Retry backoff + watcher poll cadence need a timer. reqwest already pulls tokio
 # in; this makes the dependency explicit rather than relying on its features.
