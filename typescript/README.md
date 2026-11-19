@@ -1,8 +1,10 @@
 # @usewrit/agent-sdk
 
-Official TypeScript SDK for the **Writ local agent** (`writ-agentd`) — the loopback
-HTTP API (`http://127.0.0.1:8131/v1/…`) served by the Writ desktop app and the
-self-hosted daemon.
+[Writ](https://usewrit.app) · [SDK docs](https://usewrit.app/docs/sdks/) · [Writ Desktop](https://usewrit.app/desktop/)
+
+Official TypeScript SDK for [Writ](https://usewrit.app). It talks to **Writ Desktop** on your
+computer, through the loopback HTTP API of its engine `writ-agentd`
+(`http://127.0.0.1:8131/v1/…`), and to **Writ Cloud** through its `cloud` client.
 
 - Zero runtime dependencies (Node ≥ 18, global `fetch`)
 - ESM with full type declarations, TypeScript strict mode
