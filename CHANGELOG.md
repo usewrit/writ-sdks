@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-11-19 — TypeScript, Python
+
+### Changed
+
+- **Package pages describe Writ Desktop and Writ Cloud.** The npm and PyPI READMEs no longer
+  mention a self-hosted daemon, and the homepage is [usewrit.app](https://usewrit.app)
+  ([SDK docs](https://usewrit.app/docs/sdks/)). No code changed.
+
 ## [web 0.2.0 · server 0.1.0 · usewrit 0.1.0] — 2026-10-10 — @usewrit/web, @usewrit/server, usewrit
 
 ### Added
