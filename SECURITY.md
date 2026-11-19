@@ -7,11 +7,7 @@ below:
    runs, monitors, recording, secrets. Authenticated with a local agent token
    read off disk.
 2. **A crawl surface** — `scrape`, `map`, `crawl`, `quota`, under the `.cloud`
-   namespace. It points at whichever endpoint you configure:
-   - **your own self-hosted coordinator** (`WRIT_CLOUD_URL=https://writ.example.com`),
-     which serves the same `/api/crawl*` routes — the work and the data stay on
-     your infrastructure; or
-   - **Writ Cloud** (`https://api.usewrit.app`, the default).
+   namespace. It points at **Writ Cloud** (`https://api.usewrit.app`).
 
    Authenticated with an API key from whichever instance you point at, **or with
    no key at all** on Writ Cloud's free keyless tier.
@@ -32,8 +28,8 @@ Do **not** open a public issue for an undisclosed vulnerability.
 
 Issues in the **daemon itself** belong in
 [`usewrit/writ-agent`](https://github.com/usewrit/writ-agent/security/advisories/new);
-issues in the coordinator belong in
-[`usewrit/writ`](https://github.com/usewrit/writ/security/advisories/new).
+issues in Writ Cloud go to **security@usewrit.app**
+([policy](https://usewrit.app/security/)).
 
 ### Supported versions
 
@@ -142,5 +138,5 @@ CI runs `npm audit`, `pip-audit`, `govulncheck` and `cargo deny` on every push.
   contain a live token, the third is a tracking identifier; `.gitignore`
   excludes all three.
 - **Scope cloud API keys.** Give a key only the scopes you actually use.
-- **`.cloud` defaults to `https://api.usewrit.app`.** Point `WRIT_CLOUD_URL` at
-  your own self-hosted coordinator to keep `.cloud` calls on your own server.
+- **`.cloud` defaults to `https://api.usewrit.app`.** `WRIT_CLOUD_URL` overrides it;
+  only point it at a host you trust with your API key.

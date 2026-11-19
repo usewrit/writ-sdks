@@ -4,9 +4,9 @@ contact_links:
     url: https://github.com/usewrit/writ-agent/issues
     about: These SDKs are clients. Daemon behaviour, endpoints and browser automation live in writ-agent.
 
-  - name: The self-host coordinator
-    url: https://github.com/usewrit/writ/issues
-    about: Web UI, API and your data.
+  - name: Writ Cloud and your account
+    url: https://usewrit.app/contact/
+    about: The Writ app, API, billing and your data.
 
   - name: The MCP connector
     url: https://github.com/usewrit/writ-mcp/issues
