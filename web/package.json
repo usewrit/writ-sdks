@@ -4,7 +4,7 @@
   "description": "Let a website run Writ workflows on the visitor's own computer through the Writ browser extension: a drop-in setup banner, one-click installable workflows, a typed client from the contract file, calls with progress, cancel and typed errors.",
   "license": "MIT",
   "author": "The Writ Project Authors",
-  "homepage": "https://github.com/usewrit/writ-sdks/tree/main/web#readme",
+  "homepage": "https://usewrit.app/docs/sdks/",
   "bugs": {
     "url": "https://github.com/usewrit/writ-sdks/issues"
   },
