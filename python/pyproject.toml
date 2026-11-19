@@ -28,12 +28,9 @@ dependencies = ["httpx>=0.27"]
 dev = ["pytest>=8.3", "pytest-asyncio>=1.0"]
 
 [project.urls]
-# NOTE: this used to point at https://usewrit.com, which does not resolve — the
-# project's domain is usewrit.app, and even that is not serving the product yet.
-# Point at the repository, which is real, until there is a site to link.
-Homepage = "https://github.com/usewrit/writ-sdks"
+Homepage = "https://usewrit.app"
 Repository = "https://github.com/usewrit/writ-sdks"
-Documentation = "https://github.com/usewrit/writ-sdks/tree/main/python#readme"
+Documentation = "https://usewrit.app/docs/sdks/"
 Issues = "https://github.com/usewrit/writ-sdks/issues"
 Changelog = "https://github.com/usewrit/writ-sdks/blob/main/CHANGELOG.md"
 
