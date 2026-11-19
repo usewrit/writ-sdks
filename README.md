@@ -1,5 +1,8 @@
 <div align="center">
-  <img src="./assets/banner.svg" alt="Writ SDKs — TypeScript, Python, Go and Rust clients for Writ" width="100%">
+  <a href="https://usewrit.app"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/cover-dark.png">
+    <img src="./assets/cover-light.png" alt="Writ SDKs: call your website APIs from your own code, in TypeScript, Python, Go and Rust. usewrit.app" width="100%">
+  </picture></a>
 
   <br/>
 
@@ -18,8 +21,10 @@
   <h3 align="center">Four languages. One contract.</h3>
 
   <p align="center">
+    <a href="https://usewrit.app"><b>usewrit.app</b></a> ·
+    <a href="https://usewrit.app/docs/sdks/"><b>Docs</b></a> ·
     <a href="#install"><b>Install</b></a> ·
-    <a href="#point-them-wherever-you-run-writ"><b>Targets</b></a> ·
+    <a href="#writ-desktop-and-writ-cloud"><b>Targets</b></a> ·
     <a href="#quick-start"><b>Quick start</b></a> ·
     <a href="./DESIGN.md"><b>Contract</b></a> ·
     <a href="./SECURITY.md"><b>Security</b></a> ·
@@ -29,15 +34,13 @@
 
 ---
 
-Official SDKs for [Writ](https://github.com/usewrit/writ). They drive the
-**`writ-agentd` daemon on your own machine** — run saved browser workflows, read
-the data they collect, manage monitors and automations, record new ones — and the
-crawl surface (scrape a page to clean markdown, map a site, run a crawl, save a crawl
-and call it again) against **your own self-hosted coordinator or Writ Cloud**,
-whichever you run.
+Official SDKs for [Writ](https://usewrit.app), your own API to any website. Each one has a
+client for **Writ Desktop** on your own computer (run saved workflows and APIs, follow their live
+run events, read the data they collect, manage monitors, automations, personas, secrets and files)
+and a client for **Writ Cloud** (scrape a page to clean markdown, map a site, run a crawl, save a
+crawl and call it again, follow monitors).
 
-Same code either way: one env var decides where the work happens. All four SDKs
-implement the same specification, so an example translates almost line for line
+All four SDKs implement the same specification, so an example translates almost line for line
 between them.
 
 ## Install
@@ -69,81 +72,56 @@ the Writ browser extension, with Writ Cloud as the fallback:
 Requirements: any current browser for `@usewrit/web` (Node ≥18 only to build and test it) ·
 Node ≥18 · Python ≥3.10.
 
-## Point them wherever you run Writ
+## Writ Desktop and Writ Cloud
 
-The same client covers **three targets**. Pick per use case — or use more than
-one from the same process.
+The same client covers **both**. Use either, or both from the same process.
 
 | Target | What it is | How you point at it |
 |---|---|---|
-| **Desktop / local agent** | `writ-agentd` on your own machine, over loopback | automatic discovery — nothing to configure |
-| **Self-hosted coordinator** | *your* Writ server, your hardware, your data | `WRIT_CLOUD_URL=https://writ.example.com` + an API key from that instance |
-| **Writ Cloud** | the hosted service | default — just set `WRIT_API_KEY` |
+| **Writ Desktop** | [Writ Desktop](https://usewrit.app/desktop/) on your own computer, through its engine `writ-agentd`, over loopback | automatic discovery, nothing to configure |
+| **Writ Cloud** | the hosted service at [usewrit.app](https://usewrit.app) | set `WRIT_API_KEY` |
 
-### 1. Desktop / local agent
+### Writ Desktop
 
-The default. The client finds the running daemon and its token by itself
+The default. The client finds the running engine and its token by itself
 (`127.0.0.1:8131`, HTTPS twin on `:8132`). Nothing leaves the machine. This is
 where workflows, runs with live SSE events, data, monitors, selectors and
 extractors, automations, personas, secrets, files and API keys live.
 
 ```python
-writ = WritAgent()          # discovers the local daemon
+writ = WritAgent()          # discovers Writ Desktop on this computer
 writ.workflows.list()
 ```
 
-### 2. Your self-hosted coordinator
+### Writ Cloud
 
-The `.cloud` namespace is **not hosted-only** — it speaks the coordinator's own
-API, which your self-host instance already serves. Point it at your server and
-the whole surface runs on your infrastructure: `scrape`, `map`, `crawl` /
-`crawl_status`, `monitors` (including `run` and `watch`), `automations` and
-`personas`. Same verbs, same shapes, same guarantees as the hosted tier — the
-only difference is which URL you set:
-
-```python
-writ = WritAgent(cloud_url="https://writ.example.com", api_key="wt_...")
-writ.cloud.map("https://example.com")      # runs on YOUR coordinator
-```
+Set `WRIT_API_KEY` and the `.cloud` namespace runs on Writ Cloud: `scrape`,
+`map`, `crawl` / `crawl_status`, `monitors` (including `run` and `watch`),
+`automations` and `personas`.
 
 ```bash
-export WRIT_CLOUD_URL=https://writ.example.com
-export WRIT_API_KEY=wt_...                 # Settings → Developers → API keys
+export WRIT_API_KEY=wt_...                 # usewrit.app → Developers → API Keys
 ```
 
-Create the key in your own instance under **Settings → Developers → API keys**.
-Because a key is present, calls resolve to the *metered* tier — which on your own
-server means your own metering, and no keyless client id is ever created. (The
-keyless tier is a hosted-only concept; a self-host operator always has a key.)
-
-Your coordinator honours `Idempotency-Key` and serves the same keyset change
-cursor as the hosted tier, so retried writes cannot duplicate and
-`monitors.watch()` behaves identically on your own hardware.
-
-### 3. Writ Cloud
-
-Identical code, default base URL — set `WRIT_API_KEY` and go. Without a key,
-cloud calls fall back to a free daily-capped *keyless* tier.
+Without a key, cloud calls fall back to a free daily-capped *keyless* tier.
 
 > **Keyless calls send a persistent id.** Enforcing a free daily cap requires
 > recognising the caller across runs, so the first *keyless* cloud call mints a
 > random id at `~/.writ/client_id` and sends it thereafter. Local usage and
-> keyed usage — including self-host — never create it. Details and how to reset
-> it: [`SECURITY.md`](./SECURITY.md).
+> keyed usage never create it. Details and how to reset it:
+> [`SECURITY.md`](./SECURITY.md).
 
 ## Quick start
 
-Every snippet below does the same three things: talk to the **local agent**
-(discovered automatically), then run a crawl-surface call against **your own
-coordinator**, then the same call against **Writ Cloud**. Only the constructor
-changes — `cloudUrl`/`cloud_url`/`WithCloudURL` is the whole difference.
+Every snippet below does the same two things: talk to **Writ Desktop**
+(discovered automatically), then run a call against **Writ Cloud**.
 
 **TypeScript**
 
 ```ts
 import { WritAgent } from "@usewrit/agent-sdk";
 
-// 1. Local agent — discovers the running daemon and its token.
+// 1. Writ Desktop: discovers the running engine and its token.
 const writ = await WritAgent.discover();
 const workflows = await writ.workflows.list();
 const run = await writ.workflows.runAndWait(workflows.data[0].id, {
@@ -151,14 +129,7 @@ const run = await writ.workflows.runAndWait(workflows.data[0].id, {
 });
 console.log(run.status);
 
-// 2. Your self-hosted coordinator — the crawl surface, on your hardware.
-const selfhost = new WritAgent({
-  cloudUrl: "https://writ.example.com",
-  apiKey: process.env.WRIT_API_KEY,
-});
-console.log(await selfhost.cloud.map("https://example.com"));
-
-// 3. Writ Cloud — same call, default base URL.
+// 2. Writ Cloud.
 const cloud = new WritAgent({ apiKey: process.env.WRIT_API_KEY });
 console.log((await cloud.cloud.scrape("https://example.com")).markdown);
 ```
@@ -168,17 +139,13 @@ console.log((await cloud.cloud.scrape("https://example.com")).markdown);
 ```python
 from writ_agent import WritAgent
 
-# 1. Local agent
-writ = WritAgent()                       # discovers the running agent + token
+# 1. Writ Desktop
+writ = WritAgent()                       # discovers the running engine + token
 workflows = writ.workflows.list()
 run = writ.workflows.run_and_wait(workflows.data[0]["id"], inputs={"query": "espresso"})
 print(run.status)
 
-# 2. Your self-hosted coordinator
-selfhost = WritAgent(cloud_url="https://writ.example.com", api_key="wt_...")
-print(selfhost.cloud.map("https://example.com"))
-
-# 3. Writ Cloud
+# 2. Writ Cloud
 cloud = WritAgent(api_key="wt_...")
 print(cloud.cloud.scrape("https://example.com")["markdown"])
 ```
@@ -188,21 +155,13 @@ print(cloud.cloud.scrape("https://example.com")["markdown"])
 **Go**
 
 ```go
-// 1. Local agent
+// 1. Writ Desktop
 client := writ.New()
 workflows, err := client.Workflows.List(ctx, nil)
 run, err := client.Workflows.RunAndWait(ctx, workflows.Data[0].ID, nil)
 fmt.Println(run.Status)
 
-// 2. Your self-hosted coordinator
-selfhost := writ.New(
-    writ.WithCloudURL("https://writ.example.com"),
-    writ.WithAPIKey(os.Getenv("WRIT_API_KEY")),
-)
-m, err := selfhost.Cloud.Map(ctx, "https://example.com", nil)
-fmt.Println(len(m.URLs), "urls")
-
-// 3. Writ Cloud
+// 2. Writ Cloud
 cloud := writ.New(writ.WithAPIKey(os.Getenv("WRIT_API_KEY")))
 page, err := cloud.Cloud.Scrape(ctx, "https://example.com")
 fmt.Println(page.Markdown)
@@ -211,30 +170,15 @@ fmt.Println(page.Markdown)
 **Rust**
 
 ```rust
-// 1. Local agent
+// 1. Writ Desktop
 let client = WritClient::discover().await?;
 let workflows = client.workflows().list(None).await?;
 let run = client.workflows().run_and_wait(workflows.data[0].id, None).await?;
 println!("{}", run.status);
 
-// 2. Your self-hosted coordinator
-let selfhost = CloudClient::builder()
-    .cloud_url("https://writ.example.com")
-    .api_key(std::env::var("WRIT_API_KEY")?)
-    .build()?;
-println!("{:?}", selfhost.map("https://example.com", &MapOptions::default()).await?);
-
-// 3. Writ Cloud
+// 2. Writ Cloud
 let cloud = CloudClient::from_env()?;
 println!("{}", cloud.scrape("https://example.com").await?.markdown);
-```
-
-Or skip the constructor entirely and set it in the environment — this is all it
-takes to move every crawl call from Writ Cloud onto your own server:
-
-```bash
-export WRIT_CLOUD_URL=https://writ.example.com
-export WRIT_API_KEY=wt_...
 ```
 
 > Method names follow each language's conventions — `runAndWait` /
@@ -278,11 +222,10 @@ Because these implement one contract rather than four independent clients:
   reset time.
 
   `GET`/`HEAD`/`OPTIONS` always retry. `POST`/`PUT`/`PATCH` retry **only** where
-  the server honours `Idempotency-Key` (Writ Cloud and a self-hosted
-  coordinator), and every attempt of one logical call reuses the same key, so the
-  server replays its first answer instead of executing twice. Against the local
-  agent — which has no such lane — an unsafe method is never retried, because a
-  second `POST` there is a second monitor.
+  the server honours `Idempotency-Key` (Writ Cloud), and every attempt of one
+  logical call reuses the same key, so the server replays its first answer instead
+  of executing twice. Against Writ Desktop, which has no such lane, an unsafe
+  method is never retried, because a second `POST` there is a second monitor.
 - **Webhook verification.** `verify_webhook` / `verifyWebhook` / `VerifyWebhook`
   authenticates a delivery in constant time and enforces the replay window.
   Verify `X-Writ-Signature-V1`, which covers `"{timestamp}." + body`; the
@@ -370,8 +313,8 @@ cd server-node    && npm ci && npm test
 cd usewrit-python && pip install -e ".[dev]" && python -m pytest -q
 ```
 
-Every SDK also carries a **live smoke test** that discovers a real `writ-agentd`
-and makes read-only calls, skipped unless `WRIT_SMOKE=1`. See
+Every SDK also carries a **live smoke test** that discovers a running Writ Desktop
+(`writ-agentd`) and makes read-only calls, skipped unless `WRIT_SMOKE=1`. See
 [`CONTRIBUTING.md`](./CONTRIBUTING.md) — note the two rules there: a behaviour
 change belongs in **all four** SDKs in one pull request, and TypeScript and Go
 stay at **zero runtime dependencies**.
@@ -380,9 +323,11 @@ stay at **zero runtime dependencies**.
 
 | | |
 |---|---|
-| [**usewrit/writ**](https://github.com/usewrit/writ) | The self-host coordinator — web UI, API, your data. |
-| [**usewrit/writ-agent**](https://github.com/usewrit/writ-agent) | The Rust agent these SDKs talk to. |
-| [**usewrit/writ-mcp**](https://github.com/usewrit/writ-mcp) | Connect Claude Code, Claude Desktop or Cursor to Writ over MCP. |
+| [**usewrit.app**](https://usewrit.app) | Writ Cloud: build, run and schedule your website APIs. Start here. |
+| [**usewrit/writ-desktop**](https://github.com/usewrit/writ-desktop) | Writ Desktop, the app these SDKs talk to on your computer. |
+| [**usewrit/writ-mcp**](https://github.com/usewrit/writ-mcp) | Connect an MCP client to Writ Cloud with an API key. |
+| [**usewrit/writ-plugins**](https://github.com/usewrit/writ-plugins) | The Writ plugin for Claude, Codex, Cursor, Gemini CLI and GitHub Copilot. |
+| [**usewrit/writ-for-websites**](https://github.com/usewrit/writ-for-websites) | Guides and examples for `@usewrit/web`, `@usewrit/server` and `usewrit`. |
 
 ## License
 
