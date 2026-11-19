@@ -1,7 +1,10 @@
 # Writ Agent SDK for Go
 
-The official Go client for the **Writ local agent** (`writ-agentd`) — the loopback
-HTTP daemon that runs and monitors your workflows on `127.0.0.1:8131`.
+[Writ](https://usewrit.app) · [SDK docs](https://usewrit.app/docs/sdks/) · [Writ Desktop](https://usewrit.app/desktop/)
+
+The official Go client for [Writ](https://usewrit.app). Its local client talks to **Writ
+Desktop** through its engine (`writ-agentd`), the loopback HTTP daemon that runs and monitors your
+workflows on `127.0.0.1:8131`.
 
 - Module: `github.com/usewrit/writ-sdks/go`, package `writ`
 - Go ≥ 1.23, **zero dependencies** (stdlib only)
