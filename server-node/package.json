@@ -4,7 +4,7 @@
   "description": "The server side of the Writ Bridge for Node: run your website's Writ functions on a signed-in visitor's own computer (with signed receipts) or on Writ Cloud, from one typed object, behind one route you mount.",
   "license": "MIT",
   "author": "The Writ Project Authors",
-  "homepage": "https://github.com/usewrit/writ-sdks/tree/main/server-node#readme",
+  "homepage": "https://usewrit.app/docs/sdks/",
   "bugs": {
     "url": "https://github.com/usewrit/writ-sdks/issues"
   },
